@@ -13,14 +13,14 @@
 <body>
   <div class="ambient-glow no-print"></div>
 
-  <!-- MODAL 1: BLOQUEIO DE CAIXA (SENHA = IDENTIDADE) -->
+  <!-- MODAL 1: BLOQUEIO DE CAIXA (SEM EXIBIR DICA DE SENHA) -->
   <div id="modal-bloqueio" class="modal-overlay active no-print">
     <div class="modal-card">
       <div class="logo-icon modal-logo">
         <i class="ri-gas-station-fill"></i>
       </div>
       <h2>Caixa Bloqueado</h2>
-      <p class="modal-subtitle">Digite sua senha de operador ou senha Master para assumir o terminal.</p>
+      <p class="modal-subtitle">Digite sua senha de acesso para assumir o terminal.</p>
       
       <form onsubmit="autenticarOperador(event)">
         <input 
@@ -39,7 +39,6 @@
       <p id="msg-erro-login" class="erro-msg hidden">
         <i class="ri-error-warning-line"></i> Senha inválida. Tente novamente.
       </p>
-      <small class="hint-master">Acesso Master padrão: <span class="mono">admin123</span></small>
     </div>
   </div>
 
@@ -258,20 +257,41 @@
       </div>
     </section>
 
-    <!-- TELA 4: ADMINISTRAÇÃO DE OPERADORES (RESTRITO AO ADMIN) -->
+    <!-- TELA 4: ADMINISTRAÇÃO DE OPERADORES E CREDENCIAIS (RESTRITO AO ADMIN) -->
     <section id="tela-admin" class="screen">
+      <!-- Credenciais do Administrador Master -->
       <div class="card">
-        <h2><i class="ri-user-add-line"></i> Cadastrar Novo Operador</h2>
-        <p class="card-desc">Cada operador terá sua própria senha exclusiva e abrirá caixas independentes sincronizados na nuvem.</p>
-        <form id="form-operador" onsubmit="salvarOperador(event)" class="form-grid form-admin">
-          <input type="text" id="op-nome" placeholder="Nome do Frentista / Operador" required>
-          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" required>
-          <button type="submit" class="btn btn-success">
-            <i class="ri-user-follow-line"></i> Cadastrar Operador
+        <h2><i class="ri-shield-user-line"></i> Meu Perfil de Administrador (Master)</h2>
+        <p class="card-desc">Altere seu nome de exibição e sua senha Master. Seus turnos e registros permanecem intactos.</p>
+        <form id="form-admin-master" onsubmit="salvarConfigMaster(event)" class="form-grid form-admin">
+          <input type="text" id="admin-nome" placeholder="Nome do Administrador" required>
+          <input type="text" id="admin-senha" class="mono" placeholder="Nova Senha Master" required>
+          <button type="submit" class="btn btn-primary">
+            <i class="ri-key-2-line"></i> Atualizar Senha Master
           </button>
         </form>
       </div>
 
+      <!-- Cadastro e Edição de Operadores -->
+      <div class="card">
+        <h2 id="titulo-form-operador"><i class="ri-user-add-line"></i> Cadastrar Novo Operador</h2>
+        <p class="card-desc">A edição de nome ou senha mantém o mesmo ID do operador, preservando todos os turnos e vendas do perfil.</p>
+        <form id="form-operador" onsubmit="salvarOperador(event)" class="form-grid form-admin">
+          <input type="hidden" id="op-id-edicao" value="">
+          <input type="text" id="op-nome" placeholder="Nome do Frentista / Operador" required>
+          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" required>
+          <div style="display: flex; gap: 0.5rem;">
+            <button type="submit" id="btn-submit-operador" class="btn btn-success">
+              <i class="ri-user-follow-line"></i> Cadastrar Operador
+            </button>
+            <button type="button" id="btn-cancelar-edicao" onclick="cancelarEdicaoOperador()" class="btn btn-secondary hidden">
+              Cancelar
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Lista de Operadores -->
       <div class="card">
         <h2><i class="ri-group-line"></i> Operadores Cadastrados</h2>
         <div id="lista-operadores" class="tabela-lista"></div>
