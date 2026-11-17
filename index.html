@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Caixa Petrovia — PDV</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="ambient-glow no-print"></div>
+
+  <!-- MODAL 1: BLOQUEIO DE CAIXA (SENHA = IDENTIDADE) -->
+  <div id="modal-bloqueio" class="modal-overlay active no-print">
+    <div class="modal-card">
+      <div class="logo-icon modal-logo">
+        <i class="ri-gas-station-fill"></i>
+      </div>
+      <h2>Caixa Bloqueado</h2>
+      <p class="modal-subtitle">Digite sua senha de operador ou senha Master para assumir o terminal.</p>
+      
+      <form onsubmit="autenticarOperador(event)">
+        <input 
+          type="password" 
+          id="input-senha-acesso" 
+          class="mono input-pin" 
+          placeholder="••••••••" 
+          autocomplete="off" 
+          required
+        >
+        <button type="submit" class="btn btn-primary btn-full">
+          <i class="ri-lock-unlock-line"></i> Destravar Caixa
+        </button>
+      </form>
+
+      <p id="msg-erro-login" class="erro-msg hidden">
+        <i class="ri-error-warning-line"></i> Senha inválida. Tente novamente.
+      </p>
+      <small class="hint-master">Acesso Master padrão: <span class="mono">admin123</span></small>
+    </div>
+  </div>
+
+  <!-- MODAL 2: CONFIRMAÇÃO DE IMPRESSÃO PÓS-VENDA -->
+  <div id="modal-pos-venda" class="modal-overlay no-print">
+    <div class="modal-card">
+      <div class="alert-icon success-icon">
+        <i class="ri-checkbox-circle-fill"></i>
+      </div>
+      <h2>Venda Registrada!</h2>
+      <p class="modal-subtitle">Deseja imprimir o cupom desta venda na Elgin i8?</p>
+      <div id="resumo-modal-venda" class="mono resumo-modal-box"></div>
+
+      <div class="modal-actions-grid">
+        <button type="button" onclick="confirmarImpressaoPosVenda(false)" class="btn btn-secondary">
+          <i class="ri-close-line"></i> Não Imprimir (ESC)
+        </button>
+        <button type="button" id="btn-confirmar-impressao" onclick="confirmarImpressaoPosVenda(true)" class="btn btn-success">
+          <i class="ri-printer-line"></i> Sim, Imprimir
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- BARRA SUPERIOR -->
+  <header class="top-bar no-print">
+    <div class="brand">
+      <div class="logo-icon">
+        <i class="ri-gas-station-fill"></i>
+      </div>
+      <div>
+        <div class="brand-title-row">
+          <h1>Caixa Petrovia</h1>
+          <span id="badge-operador" class="badge badge-user">
+            <i class="ri-user-3-line"></i> ---
+          </span>
+          <span id="badge-nuvem" class="badge badge-open">
+            <i class="ri-cloud-line"></i> Firebase Conectado
+          </span>
+        </div>
+        <span id="status-turno-badge" class="badge badge-closed">Caixa Fechado</span>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <nav class="nav-tabs">
+        <button id="tab-pdv" class="tab-btn active" onclick="navegar('pdv', this)">
+          <i class="ri-shopping-bag-3-line"></i> PDV
+        </button>
+        <button id="tab-turnos" class="tab-btn" onclick="navegar('turnos', this)">
+          <i class="ri-file-chart-line"></i> Turnos & Extrato
+        </button>
+        <button id="tab-produtos" class="tab-btn" onclick="navegar('produtos', this)">
+          <i class="ri-price-tag-3-line"></i> Produtos
+        </button>
+        <button id="tab-admin" class="tab-btn hidden" onclick="navegar('admin', this)">
+          <i class="ri-shield-keyhole-line"></i> Admin
+        </button>
+      </nav>
+
+      <button onclick="bloquearCaixa()" class="btn btn-danger btn-lock" title="Atalho: Tecla ESC">
+        <i class="ri-lock-2-line"></i> Trocar / ESC
+      </button>
+    </div>
+  </header>
+
+  <!-- CONTEÚDO PRINCIPAL -->
+  <main class="container no-print">
+    <!-- TELA 1: FRENTE DE CAIXA (PDV) -->
+    <section id="tela-pdv" class="screen active">
+      <div id="aviso-turno-fechado" class="alert-box">
+        <div class="alert-icon"><i class="ri-time-line"></i></div>
+        <h3>Seu Caixa Está Fechado</h3>
+        <p>Abra o seu turno individual abaixo. Ele ficará salvo na nuvem e na memória mesmo quando outro operador usar a máquina.</p>
+        <div class="turno-actions">
+          <button onclick="abrirTurno('MANHÃ (06h-14h)')" class="btn btn-primary">
+            <i class="ri-sun-line"></i> Abrir Manhã
+          </button>
+          <button onclick="abrirTurno('TARDE (14h-22h)')" class="btn btn-primary">
+            <i class="ri-sun-cloudy-line"></i> Abrir Tarde
+          </button>
+          <button onclick="abrirTurno('NOITE (22h-06h)')" class="btn btn-primary">
+            <i class="ri-moon-clear-line"></i> Abrir Noite
+          </button>
+        </div>
+      </div>
+
+      <div id="area-operacao-pdv" class="pdv-grid hidden">
+        <!-- Catálogo de Produtos com Categorias e Ordenação -->
+        <div class="catalogo-panel">
+          <div class="panel-header">
+            <h2><i class="ri-layout-grid-line"></i> Catálogo</h2>
+            <div class="catalogo-controles">
+              <input type="text" id="busca-produto-pdv" placeholder="Buscar nome ou código..." oninput="carregarProdutos()">
+              <select id="ordenacao-pdv" onchange="carregarProdutos()" title="Ordenar produtos">
+                <option value="nome-asc">Ordem: A → Z</option>
+                <option value="nome-desc">Ordem: Z → A</option>
+                <option value="preco-desc">Preço: Maior → Menor</option>
+                <option value="preco-asc">Preço: Menor → Maior</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Abas de Categorias e Subcategorias -->
+          <div id="barra-categorias-pdv" class="pills-bar"></div>
+          <div id="barra-subcategorias-pdv" class="pills-bar sub-pills hidden"></div>
+
+          <div id="grade-produtos-pdv" class="produtos-grid"></div>
+        </div>
+
+        <!-- Cupom / Carrinho Atual -->
+        <div class="carrinho-panel">
+          <div class="panel-header">
+            <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
+            <small class="esc-hint">ESC limpa e bloqueia</small>
+          </div>
+          <div id="lista-carrinho" class="carrinho-itens"></div>
+
+          <div class="resumo-venda">
+            <div class="linha-resumo">
+              <span>Subtotal</span>
+              <strong id="valor-bruto" class="mono">R$ 0,00</strong>
+            </div>
+            <div class="linha-resumo">
+              <label for="input-desconto">Desconto (R$)</label>
+              <input type="number" id="input-desconto" class="mono" step="0.01" min="0" value="0" oninput="atualizarCarrinhoUI()">
+            </div>
+            <div class="linha-resumo total">
+              <span>Total a Pagar</span>
+              <strong id="valor-final" class="mono">R$ 0,00</strong>
+            </div>
+
+            <div class="acoes-venda">
+              <button onclick="limparCarrinho()" class="btn btn-danger">
+                <i class="ri-delete-bin-line"></i> Limpar
+              </button>
+              <button onclick="finalizarVenda()" class="btn btn-success">
+                <i class="ri-check-double-line"></i> Concluir Venda
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TELA 2: TURNOS, REIMPRESSÃO E EXTRATO -->
+    <section id="tela-turnos" class="screen">
+      <div class="card" id="card-controle-turno">
+        <h2><i class="ri-flashlight-line"></i> Meu Turno em Andamento</h2>
+        <div id="info-turno-atual"></div>
+      </div>
+
+      <div class="card">
+        <div class="header-historico">
+          <h2><i class="ri-history-line"></i> Histórico de Turnos e 2ª Via de Vendas</h2>
+          <input type="date" id="filtro-data" onchange="carregarHistoricoTurnos()">
+        </div>
+        <div id="lista-historico-turnos" class="historico-lista"></div>
+      </div>
+    </section>
+
+    <!-- TELA 3: GESTÃO DE PRODUTOS -->
+    <section id="tela-produtos" class="screen">
+      <div class="card">
+        <h2><i class="ri-add-circle-line"></i> Cadastrar Produto no Catálogo</h2>
+        <form id="form-produto" onsubmit="salvarProduto(event)" class="form-grid-produtos">
+          <div class="field-group">
+            <label for="prod-nome">Nome / Marca</label>
+            <input type="text" id="prod-nome" placeholder="Ex: Heineken, Coca-Cola..." required>
+          </div>
+
+          <div class="field-group">
+            <label for="prod-categoria">Categoria</label>
+            <select id="prod-categoria" onchange="atualizarSubcategoriasForm()" required></select>
+          </div>
+
+          <div class="field-group">
+            <label for="prod-subcategoria">Tipo / Embalagem</label>
+            <select id="prod-subcategoria" required></select>
+          </div>
+
+          <div class="field-group">
+            <label for="prod-preco">Preço (R$)</label>
+            <input type="number" id="prod-preco" step="0.01" min="0.01" placeholder="0,00" required>
+          </div>
+
+          <div class="field-group">
+            <label for="prod-codigo">Código / SKU</label>
+            <input type="text" id="prod-codigo" placeholder="Opcional">
+          </div>
+
+          <div class="field-group field-action">
+            <button type="submit" class="btn btn-primary btn-full">
+              <i class="ri-save-line"></i> Salvar
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="panel-header" style="margin-bottom: 1rem;">
+          <h2><i class="ri-archive-line"></i> Produtos Ativos</h2>
+          <div class="catalogo-controles">
+            <select id="filtro-cat-cadastro" onchange="carregarProdutos()">
+              <option value="TODAS">Todas as Categorias</option>
+            </select>
+            <select id="ordenacao-cadastro" onchange="carregarProdutos()">
+              <option value="nome-asc">Ordem: A → Z</option>
+              <option value="nome-desc">Ordem: Z → A</option>
+              <option value="preco-desc">Maior Preço</option>
+              <option value="preco-asc">Menor Preço</option>
+            </select>
+          </div>
+        </div>
+        <div id="lista-produtos-cadastro" class="tabela-lista"></div>
+      </div>
+    </section>
+
+    <!-- TELA 4: ADMINISTRAÇÃO DE OPERADORES (RESTRITO AO ADMIN) -->
+    <section id="tela-admin" class="screen">
+      <div class="card">
+        <h2><i class="ri-user-add-line"></i> Cadastrar Novo Operador</h2>
+        <p class="card-desc">Cada operador terá sua própria senha exclusiva e abrirá caixas independentes sincronizados na nuvem.</p>
+        <form id="form-operador" onsubmit="salvarOperador(event)" class="form-grid form-admin">
+          <input type="text" id="op-nome" placeholder="Nome do Frentista / Operador" required>
+          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" required>
+          <button type="submit" class="btn btn-success">
+            <i class="ri-user-follow-line"></i> Cadastrar Operador
+          </button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2><i class="ri-group-line"></i> Operadores Cadastrados</h2>
+        <div id="lista-operadores" class="tabela-lista"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ÁREA EXCLUSIVA PARA IMPRESSÃO TÉRMICA 80MM (ELGIN i8) -->
+  <div id="area-impressao" class="print-only"></div>
+
+  <!-- MOTOR COM FIREBASE INTEGRADO -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
