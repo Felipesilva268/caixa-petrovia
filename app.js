@@ -22,7 +22,6 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// Habilita banco de dados com persistência Offline no navegador
 const db = initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
@@ -34,6 +33,10 @@ let cacheUsuarios = [];
 let cacheProdutos = [];
 let cacheTurnos = [];
 let cacheVendas = [];
+let configMaster = {
+  nome: "Admin Master",
+  senha: "admin123" // Valor inicial caso ainda não tenha sido alterado no painel Admin
+};
 
 let usuarioLogado = null;
 let turnoAtivo = null;
@@ -42,8 +45,6 @@ let ultimaVendaId = null;
 
 let categoriaAtivaPDV = "TODAS";
 let subcategoriaAtivaPDV = "TODAS";
-
-const SENHA_MASTER = "admin123";
 
 const MAPA_CATEGORIAS = {
   "Cervejas": ["Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
@@ -54,17 +55,46 @@ const MAPA_CATEGORIAS = {
   "Conveniência": ["Cigarros", "Salgados / Doces", "Carvão", "Diversos"]
 };
 
-// Gera um ID numérico sequencial limpo (#1, #2, #3...)
 function gerarProximoId(lista) {
   if (!lista.length) return 1;
   return Math.max(...lista.map(item => Number(item.id) || 0)) + 1;
 }
 
-// 2. ESCUTA EM TEMPO REAL DO FIREBASE (SINCRONIZAÇÃO ENTRE TELAS)
+// Resolve sempre o nome mais recente do perfil sem perder o vínculo com o ID
+function obterNomePerfil(usuarioId, nomeSalvo) {
+  if (usuarioId === "admin") return configMaster.nome;
+  const op = cacheUsuarios.find(u => u.id === Number(usuarioId));
+  return op ? op.nome : (nomeSalvo || "Operador");
+}
+
+// 2. ESCUTA EM TEMPO REAL DO FIREBASE
 function iniciarSincronizacaoFirebase() {
+  onSnapshot(collection(db, "configuracoes"), (snapshot) => {
+    const docMaster = snapshot.docs.find(d => d.id === "master");
+    if (docMaster) {
+      configMaster = docMaster.data();
+      if (usuarioLogado?.isAdmin) {
+        usuarioLogado.nome = configMaster.nome;
+        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${usuarioLogado.nome}`;
+        preencherCamposMaster();
+      }
+    }
+  });
+
   onSnapshot(collection(db, "usuarios"), (snapshot) => {
     cacheUsuarios = snapshot.docs.map(d => d.data());
+    if (usuarioLogado && !usuarioLogado.isAdmin) {
+      const meuPerfil = cacheUsuarios.find(u => u.id === usuarioLogado.id);
+      if (meuPerfil) {
+        usuarioLogado.nome = meuPerfil.nome;
+        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${usuarioLogado.nome}`;
+      }
+    }
     if (usuarioLogado?.isAdmin) carregarOperadores();
+    if (usuarioLogado) {
+      atualizarStatusTurnoUI();
+      carregarHistoricoTurnos();
+    }
   });
 
   onSnapshot(collection(db, "produtos"), (snapshot) => {
@@ -86,7 +116,6 @@ function iniciarSincronizacaoFirebase() {
   });
 }
 
-// Inicialização da interface
 inicializarSeletoresCategorias();
 iniciarSincronizacaoFirebase();
 focarInputSenha();
@@ -146,8 +175,8 @@ function autenticarOperador(e) {
   const senhaDigitada = input.value.trim();
   const msgErro = document.getElementById("msg-erro-login");
 
-  if (senhaDigitada === SENHA_MASTER) {
-    usuarioLogado = { id: "admin", nome: "Admin Master", isAdmin: true };
+  if (senhaDigitada === configMaster.senha) {
+    usuarioLogado = { id: "admin", nome: configMaster.nome, isAdmin: true };
     liberarTerminal();
     return;
   }
@@ -179,6 +208,7 @@ function liberarTerminal() {
   const tabAdmin = document.getElementById("tab-admin");
   if (usuarioLogado.isAdmin) {
     tabAdmin.classList.remove("hidden");
+    preencherCamposMaster();
     carregarOperadores();
   } else {
     tabAdmin.classList.add("hidden");
@@ -192,6 +222,7 @@ function liberarTerminal() {
 
 function bloquearCaixa() {
   limparCarrinho();
+  cancelarEdicaoOperador();
   usuarioLogado = null;
   turnoAtivo = null;
 
@@ -210,35 +241,119 @@ function navegar(aba, btnElement) {
 
   if (aba === "turnos") carregarHistoricoTurnos();
   if (aba === "produtos") carregarProdutos();
-  if (aba === "admin" && usuarioLogado?.isAdmin) carregarOperadores();
+  if (aba === "admin" && usuarioLogado?.isAdmin) {
+    preencherCamposMaster();
+    carregarOperadores();
+  }
 }
 
-// 6. GESTÃO DE OPERADORES (ABA ADMIN)
+// 6. GESTÃO DO ADMIN MASTER E EDIÇÃO DE OPERADORES (SEM APAGAR PERFIL)
+function preencherCamposMaster() {
+  const inputNome = document.getElementById("admin-nome");
+  const inputSenha = document.getElementById("admin-senha");
+  if (inputNome && inputSenha) {
+    inputNome.value = configMaster.nome;
+    inputSenha.value = configMaster.senha;
+  }
+}
+
+function salvarConfigMaster(e) {
+  e.preventDefault();
+  const novoNome = document.getElementById("admin-nome").value.trim();
+  const novaSenha = document.getElementById("admin-senha").value.trim();
+
+  const conflitoOperador = cacheUsuarios.some(u => u.senha === novaSenha && u.ativo !== false);
+  if (conflitoOperador) {
+    alert("Esta senha já está sendo usada por um operador. Escolha outra senha Master.");
+    return;
+  }
+
+  setDoc(doc(db, "configuracoes", "master"), {
+    nome: novoNome,
+    senha: novaSenha
+  });
+
+  alert("Perfil e Senha Master atualizados com sucesso!");
+}
+
+function prepararEdicaoOperador(id) {
+  const op = cacheUsuarios.find(u => u.id === Number(id));
+  if (!op) return;
+
+  document.getElementById("op-id-edicao").value = op.id;
+  document.getElementById("op-nome").value = op.nome;
+  document.getElementById("op-senha").value = op.senha;
+
+  document.getElementById("titulo-form-operador").innerHTML = `<i class="ri-edit-line"></i> Editando Operador #${op.id}`;
+  document.getElementById("btn-submit-operador").innerHTML = `<i class="ri-save-line"></i> Salvar Alterações`;
+  document.getElementById("btn-cancelar-edicao").classList.remove("hidden");
+  document.getElementById("op-nome").focus();
+}
+
+function cancelarEdicaoOperador() {
+  const form = document.getElementById("form-operador");
+  if (form) form.reset();
+  const idInput = document.getElementById("op-id-edicao");
+  if (idInput) idInput.value = "";
+
+  const titulo = document.getElementById("titulo-form-operador");
+  if (titulo) titulo.innerHTML = `<i class="ri-user-add-line"></i> Cadastrar Novo Operador`;
+
+  const btnSubmit = document.getElementById("btn-submit-operador");
+  if (btnSubmit) btnSubmit.innerHTML = `<i class="ri-user-follow-line"></i> Cadastrar Operador`;
+
+  const btnCancelar = document.getElementById("btn-cancelar-edicao");
+  if (btnCancelar) btnCancelar.classList.add("hidden");
+}
+
 function salvarOperador(e) {
   e.preventDefault();
+  const idEdicao = document.getElementById("op-id-edicao").value;
   const nome = document.getElementById("op-nome").value.trim();
   const senha = document.getElementById("op-senha").value.trim();
 
-  if (senha === SENHA_MASTER) {
-    alert("Essa senha já é reservada ao Admin Master. Escolha outra.");
+  if (senha === configMaster.senha) {
+    alert("Essa senha é reservada ao Admin Master. Escolha outra.");
     return;
   }
 
-  const jaExiste = cacheUsuarios.some(u => u.senha === senha && u.ativo !== false);
+  const idNum = idEdicao ? Number(idEdicao) : null;
+  const jaExiste = cacheUsuarios.some(u => u.senha === senha && u.ativo !== false && u.id !== idNum);
   if (jaExiste) {
-    alert("Já existe um operador usando esta senha. Escolha uma senha diferente.");
+    alert("Já existe outro operador usando esta senha. Escolha uma senha exclusiva.");
     return;
   }
 
-  const novoId = gerarProximoId(cacheUsuarios);
-  const novoOperador = { id: novoId, nome, senha, ativo: true };
-
-  setDoc(doc(db, "usuarios", String(novoId)), novoOperador);
-  document.getElementById("form-operador").reset();
+  if (idNum) {
+    // MODO EDIÇÃO: Atualiza nome e senha mantendo o mesmo ID (preserva todos os turnos e vendas)
+    const opAtual = cacheUsuarios.find(u => u.id === idNum);
+    setDoc(doc(db, "usuarios", String(idNum)), {
+      ...opAtual,
+      id: idNum,
+      nome,
+      senha,
+      ativo: true
+    });
+    cancelarEdicaoOperador();
+  } else {
+    // MODO CRIAÇÃO
+    const novoId = gerarProximoId(cacheUsuarios);
+    setDoc(doc(db, "usuarios", String(novoId)), {
+      id: novoId,
+      nome,
+      senha,
+      ativo: true
+    });
+    document.getElementById("form-operador").reset();
+  }
 }
 
 function removerOperador(id) {
+  if (!confirm("Deseja remover o acesso deste operador? O histórico de turnos dele será mantido.")) return;
   deleteDoc(doc(db, "usuarios", String(id)));
+  if (Number(document.getElementById("op-id-edicao").value) === Number(id)) {
+    cancelarEdicaoOperador();
+  }
 }
 
 function carregarOperadores() {
@@ -254,11 +369,16 @@ function carregarOperadores() {
     <div class="item-carrinho">
       <div>
         <strong>${op.nome}</strong>
-        <div class="mono" style="font-size:0.82rem; color:var(--text-muted);">Senha: ${op.senha} | ID: #${op.id}</div>
+        <div class="mono" style="font-size:0.82rem; color:var(--text-muted);">Senha: ${op.senha} | ID Fixo: #${op.id}</div>
       </div>
-      <button class="btn btn-danger btn-sm" onclick="removerOperador(${op.id})">
-        <i class="ri-delete-bin-line"></i> Excluir
-      </button>
+      <div style="display:flex; gap:0.4rem;">
+        <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoOperador(${op.id})">
+          <i class="ri-edit-line"></i> Editar
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="removerOperador(${op.id})">
+          <i class="ri-delete-bin-line"></i> Excluir
+        </button>
+      </div>
     </div>
   `).join("");
 }
@@ -529,6 +649,7 @@ function fecharTurnoAtual(imprimirFechamento = false) {
 
   const turnoEncerrado = {
     ...turnoAtivo,
+    operadorNome: obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome),
     status: "FECHADO",
     dataHoraFechamento: Date.now()
   };
@@ -548,6 +669,7 @@ function atualizarStatusTurnoUI() {
   const infoTurno = document.getElementById("info-turno-atual");
 
   if (turnoAtivo) {
+    const nomeAtual = obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome);
     badge.textContent = `Caixa Aberto: ${turnoAtivo.tipoTurno}`;
     badge.className = "badge badge-open";
     aviso.classList.add("hidden");
@@ -555,7 +677,7 @@ function atualizarStatusTurnoUI() {
 
     infoTurno.innerHTML = `
       <p style="margin:0.6rem 0; color:var(--text-muted);">
-        Operador: <strong style="color:var(--text-main);">${turnoAtivo.operadorNome}</strong> |
+        Operador: <strong style="color:var(--text-main);">${nomeAtual}</strong> |
         Turno: <strong style="color:var(--text-main);">${turnoAtivo.tipoTurno}</strong> |
         Abertura: ${new Date(turnoAtivo.dataHoraAbertura).toLocaleString("pt-BR")}
       </p>
@@ -668,7 +790,6 @@ function finalizarVenda() {
     itens: [...carrinho]
   };
 
-  // Grava imediatamente no cache local e sincroniza na nuvem do Firebase
   setDoc(doc(db, "vendas", String(novoId)), venda);
 
   ultimaVendaId = novoId;
@@ -712,6 +833,7 @@ function carregarHistoricoTurnos() {
   }
 
   container.innerHTML = turnos.map(t => {
+    const nomeOperadorAtual = obterNomePerfil(t.usuarioId, t.operadorNome);
     const vendasTurno = cacheVendas
       .filter(v => v.turnoId === t.id && v.status === "CONCLUIDA")
       .sort((a, b) => a.dataHora - b.dataHora);
@@ -741,7 +863,7 @@ function carregarHistoricoTurnos() {
             <strong>Turno #${t.id} — ${t.tipoTurno}</strong>
             <span class="badge ${t.status === 'ABERTO' ? 'badge-open' : 'badge-closed'}">${t.status}</span>
             <div style="font-size:0.83rem; color:var(--text-muted); margin-top:0.25rem;">
-              Operador: <strong>${t.operadorNome || "Operador"}</strong> |
+              Operador: <strong>${nomeOperadorAtual}</strong> |
               Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}
               ${t.dataHoraFechamento ? ` | Fim: ${new Date(t.dataHoraFechamento).toLocaleString("pt-BR")}` : ""}
             </div>
@@ -768,12 +890,13 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   const v = cacheVendas.find(item => item.id === Number(vendaId));
   if (!v) return;
 
+  const nomeOperador = obterNomePerfil(v.usuarioId, v.operadorNome);
   const area = document.getElementById("area-impressao");
   area.innerHTML = `
     <div class="cupom-header">
       <h3>CAIXA PETROVIA</h3>
       <div>COMPROVANTE DE VENDA #${v.id}</div>
-      <div>Operador: ${v.operadorNome || "---"}</div>
+      <div>Operador: ${nomeOperador}</div>
       <div>Data: ${new Date(v.dataHora).toLocaleString("pt-BR")}</div>
     </div>
 
@@ -814,6 +937,7 @@ function imprimirRelatorioTurno80mm(turnoId) {
   const t = cacheTurnos.find(item => item.id === Number(turnoId));
   if (!t) return;
 
+  const nomeOperador = obterNomePerfil(t.usuarioId, t.operadorNome);
   const vendas = cacheVendas
     .filter(v => v.turnoId === Number(turnoId) && v.status === "CONCLUIDA")
     .sort((a, b) => a.dataHora - b.dataHora);
@@ -828,7 +952,7 @@ function imprimirRelatorioTurno80mm(turnoId) {
       <h3>CAIXA PETROVIA</h3>
       <div>EXTRATO DE TURNO #${t.id}</div>
       <div>Turno: ${t.tipoTurno} (${t.status})</div>
-      <div>Operador: ${t.operadorNome || "---"}</div>
+      <div>Operador: ${nomeOperador}</div>
       <div>Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}</div>
       <div>Fim: ${t.dataHoraFechamento ? new Date(t.dataHoraFechamento).toLocaleString("pt-BR") : "Em andamento"}</div>
     </div>
@@ -871,6 +995,9 @@ Object.assign(window, {
   autenticarOperador,
   bloquearCaixa,
   navegar,
+  salvarConfigMaster,
+  prepararEdicaoOperador,
+  cancelarEdicaoOperador,
   salvarOperador,
   removerOperador,
   salvarProduto,
