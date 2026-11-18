@@ -1,4 +1,4 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/13.4.0/firebase-app.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -8,7 +8,7 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot
-} from "https://www.gstatic.com/firebasejs/13.4.0/firebase-firestore.js";
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // 1. CONFIGURAÇÃO DIRETA DO FIREBASE (CAIXA PETROVIA)
 const firebaseConfig = {
