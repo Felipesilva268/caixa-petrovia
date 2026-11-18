@@ -35,7 +35,7 @@ let cacheTurnos = [];
 let cacheVendas = [];
 let configMaster = {
   nome: "Admin Master",
-  senha: "admin123" // Valor inicial caso ainda não tenha sido alterado no painel Admin
+  senha: "admin123"
 };
 
 let usuarioLogado = null;
@@ -46,8 +46,12 @@ let ultimaVendaId = null;
 let categoriaAtivaPDV = "TODAS";
 let subcategoriaAtivaPDV = "TODAS";
 
+let chartInstanciaPicos = null;
+let chartInstanciaProdutos = null;
+
+// MAPA OFICIAL DE CATEGORIAS E EMBALAGENS
 const MAPA_CATEGORIAS = {
-  "Cervejas": ["Latinha","Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
+  "Cervejas": ["Latinha", "Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
   "Refrigerantes": ["Lata", "600ml", "1 Litro", "2 Litros", "Outros"],
   "Energéticos": ["Lata (250/269ml)", "Latão (473ml)", "Garrafa 2L", "Outros"],
   "Águas & Sucos": ["Sem Gás", "Com Gás", "Suco", "Água de Coco", "Gelo", "Outros"],
@@ -60,7 +64,6 @@ function gerarProximoId(lista) {
   return Math.max(...lista.map(item => Number(item.id) || 0)) + 1;
 }
 
-// Resolve sempre o nome mais recente do perfil sem perder o vínculo com o ID
 function obterNomePerfil(usuarioId, nomeSalvo) {
   if (usuarioId === "admin") return configMaster.nome;
   const op = cacheUsuarios.find(u => u.id === Number(usuarioId));
@@ -112,7 +115,12 @@ function iniciarSincronizacaoFirebase() {
 
   onSnapshot(collection(db, "vendas"), (snapshot) => {
     cacheVendas = snapshot.docs.map(d => d.data());
-    if (usuarioLogado) carregarHistoricoTurnos();
+    if (usuarioLogado) {
+      carregarHistoricoTurnos();
+      if (document.getElementById("tela-dashboard")?.classList.contains("active")) {
+        renderizarDashboard();
+      }
+    }
   });
 }
 
@@ -136,30 +144,99 @@ function inicializarSeletoresCategorias() {
   }
 }
 
-function atualizarSubcategoriasForm() {
+function atualizarSubcategoriasForm(subParaSelecionar = null) {
   const catSelecionada = document.getElementById("prod-categoria").value;
   const selectSub = document.getElementById("prod-subcategoria");
-  const subcategorias = MAPA_CATEGORIAS[catSelecionada] || ["Geral"];
+  const subcategorias = MAPA_CATEGORIAS[catSelecionada] || ["Outros"];
 
   selectSub.innerHTML = subcategorias.map(sub => `<option value="${sub}">${sub}</option>`).join("");
+  if (subParaSelecionar && subcategorias.includes(subParaSelecionar)) {
+    selectSub.value = subParaSelecionar;
+  }
 }
 
-// 3. ATALHO GLOBAL DA TECLA ESC (LIMPA CARRINHO E TRAVA CAIXA)
+// 3. MOTOR DE ATALHOS DE TECLADO (100% SHORTCUTS E BIPADOR)
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    const modalPosVenda = document.getElementById("modal-pos-venda");
-    if (modalPosVenda.classList.contains("active")) {
-      confirmarImpressaoPosVenda(false);
-      return;
-    }
+  const modalBloqueio = document.getElementById("modal-bloqueio");
+  const modalPosVenda = document.getElementById("modal-pos-venda");
 
-    const modalBloqueio = document.getElementById("modal-bloqueio");
-    if (!modalBloqueio.classList.contains("active")) {
+  if (modalBloqueio.classList.contains("active")) return;
+
+  // Se o modal pós-venda estiver aberto: Enter imprime, ESC cancela e bloqueia
+  if (modalPosVenda.classList.contains("active")) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      confirmarImpressaoPosVenda(false);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      confirmarImpressaoPosVenda(true);
+    }
+    return;
+  }
+
+  switch (e.key) {
+    case "Escape":
       e.preventDefault();
       bloquearCaixa();
-    }
+      break;
+    case "F2":
+      e.preventDefault();
+      if (document.getElementById("tela-pdv").classList.contains("active")) {
+        finalizarVenda();
+      }
+      break;
+    case "F4":
+      e.preventDefault();
+      if (document.getElementById("tela-pdv").classList.contains("active")) {
+        const inputBusca = document.getElementById("busca-produto-pdv");
+        if (inputBusca) {
+          inputBusca.focus();
+          inputBusca.select();
+        }
+      }
+      break;
+    case "F9":
+      e.preventDefault();
+      if (document.getElementById("tela-pdv").classList.contains("active")) {
+        limparCarrinho();
+      }
+      break;
   }
 });
+
+// Suporte a Leitor de Código de Barras / Enter direto na barra de busca
+function processarEnterBuscaPDV(e) {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+
+  const input = document.getElementById("busca-produto-pdv");
+  const termo = (input.value || "").trim().toLowerCase();
+  if (!termo) return;
+
+  const ativos = cacheProdutos.filter(p => p.ativo);
+
+  // 1º Tenta achar pelo código exato (Bipador USB)
+  let encontrado = ativos.find(p => p.codigoInterno && p.codigoInterno.toLowerCase() === termo);
+
+  // 2º Se não achou por código, mas só restou 1 produto filtrado na tela, adiciona ele
+  if (!encontrado) {
+    const filtrados = ativos.filter(p =>
+      p.nome.toLowerCase().includes(termo) ||
+      (p.subcategoria && p.subcategoria.toLowerCase().includes(termo)) ||
+      (p.codigoInterno && p.codigoInterno.toLowerCase().includes(termo))
+    );
+    if (filtrados.length === 1) {
+      encontrado = filtrados[0];
+    }
+  }
+
+  if (encontrado) {
+    const sub = encontrado.subcategoria || "Diversos";
+    adicionarAoCarrinho(encontrado.id, `${encontrado.nome} (${sub})`, encontrado.precoUnitario);
+    input.value = "";
+    carregarProdutos();
+  }
+}
 
 function focarInputSenha() {
   setTimeout(() => {
@@ -206,12 +283,16 @@ function liberarTerminal() {
   `;
 
   const tabAdmin = document.getElementById("tab-admin");
+  const tabDashboard = document.getElementById("tab-dashboard");
+
   if (usuarioLogado.isAdmin) {
     tabAdmin.classList.remove("hidden");
+    tabDashboard.classList.remove("hidden");
     preencherCamposMaster();
     carregarOperadores();
   } else {
     tabAdmin.classList.add("hidden");
+    tabDashboard.classList.add("hidden");
   }
 
   navegar("pdv", document.getElementById("tab-pdv"));
@@ -223,6 +304,7 @@ function liberarTerminal() {
 function bloquearCaixa() {
   limparCarrinho();
   cancelarEdicaoOperador();
+  cancelarEdicaoProduto();
   usuarioLogado = null;
   turnoAtivo = null;
 
@@ -241,13 +323,14 @@ function navegar(aba, btnElement) {
 
   if (aba === "turnos") carregarHistoricoTurnos();
   if (aba === "produtos") carregarProdutos();
+  if (aba === "dashboard" && usuarioLogado?.isAdmin) renderizarDashboard();
   if (aba === "admin" && usuarioLogado?.isAdmin) {
     preencherCamposMaster();
     carregarOperadores();
   }
 }
 
-// 6. GESTÃO DO ADMIN MASTER E EDIÇÃO DE OPERADORES (SEM APAGAR PERFIL)
+// 6. GESTÃO DO ADMIN MASTER E EDIÇÃO DE OPERADORES
 function preencherCamposMaster() {
   const inputNome = document.getElementById("admin-nome");
   const inputSenha = document.getElementById("admin-senha");
@@ -325,7 +408,6 @@ function salvarOperador(e) {
   }
 
   if (idNum) {
-    // MODO EDIÇÃO: Atualiza nome e senha mantendo o mesmo ID (preserva todos os turnos e vendas)
     const opAtual = cacheUsuarios.find(u => u.id === idNum);
     setDoc(doc(db, "usuarios", String(idNum)), {
       ...opAtual,
@@ -336,7 +418,6 @@ function salvarOperador(e) {
     });
     cancelarEdicaoOperador();
   } else {
-    // MODO CRIAÇÃO
     const novoId = gerarProximoId(cacheUsuarios);
     setDoc(doc(db, "usuarios", String(novoId)), {
       id: novoId,
@@ -383,18 +464,61 @@ function carregarOperadores() {
   `).join("");
 }
 
-// 7. CATÁLOGO DE PRODUTOS, AGRUPAMENTO POR CATEGORIA E ORDENAÇÃO
+// 7. CATÁLOGO DE PRODUTOS, EDIÇÃO, AGRUPAMENTO E ORDENAÇÃO
+function prepararEdicaoProduto(id) {
+  const p = cacheProdutos.find(item => item.id === Number(id));
+  if (!p) return;
+
+  document.getElementById("prod-id-edicao").value = p.id;
+  document.getElementById("prod-nome").value = p.nome;
+
+  const selectCat = document.getElementById("prod-categoria");
+  const categoriaValida = MAPA_CATEGORIAS[p.categoria] ? p.categoria : "Cigarros";
+  selectCat.value = categoriaValida;
+  atualizarSubcategoriasForm(p.subcategoria);
+
+  document.getElementById("prod-preco").value = p.precoUnitario;
+  document.getElementById("prod-codigo").value = p.codigoInterno || "";
+
+  document.getElementById("titulo-form-produto").innerHTML = `<i class="ri-edit-line"></i> Editando Produto #${p.id}`;
+  document.getElementById("btn-submit-produto").innerHTML = `<i class="ri-save-line"></i> Atualizar`;
+  document.getElementById("btn-cancelar-prod").classList.remove("hidden");
+  document.getElementById("prod-nome").focus();
+}
+
+function cancelarEdicaoProduto() {
+  const idInput = document.getElementById("prod-id-edicao");
+  if (idInput) idInput.value = "";
+  const nomeInput = document.getElementById("prod-nome");
+  if (nomeInput) nomeInput.value = "";
+  const precoInput = document.getElementById("prod-preco");
+  if (precoInput) precoInput.value = "";
+  const codInput = document.getElementById("prod-codigo");
+  if (codInput) codInput.value = "";
+
+  const titulo = document.getElementById("titulo-form-produto");
+  if (titulo) titulo.innerHTML = `<i class="ri-add-circle-line"></i> Cadastrar Produto no Catálogo`;
+
+  const btnSubmit = document.getElementById("btn-submit-produto");
+  if (btnSubmit) btnSubmit.innerHTML = `<i class="ri-save-line"></i> Salvar`;
+
+  const btnCancel = document.getElementById("btn-cancelar-prod");
+  if (btnCancel) btnCancel.classList.add("hidden");
+}
+
 function salvarProduto(e) {
   e.preventDefault();
+  const idEdicao = document.getElementById("prod-id-edicao").value;
   const nome = document.getElementById("prod-nome").value.trim();
   const categoria = document.getElementById("prod-categoria").value;
   const subcategoria = document.getElementById("prod-subcategoria").value;
   const precoUnitario = parseFloat(document.getElementById("prod-preco").value);
   const codigoInterno = document.getElementById("prod-codigo").value.trim();
 
-  const novoId = gerarProximoId(cacheProdutos);
-  const novoProd = {
-    id: novoId,
+  const idFinal = idEdicao ? Number(idEdicao) : gerarProximoId(cacheProdutos);
+
+  const prodDados = {
+    id: idFinal,
     nome,
     categoria,
     subcategoria,
@@ -403,11 +527,8 @@ function salvarProduto(e) {
     ativo: true
   };
 
-  setDoc(doc(db, "produtos", String(novoId)), novoProd);
-
-  document.getElementById("prod-nome").value = "";
-  document.getElementById("prod-preco").value = "";
-  document.getElementById("prod-codigo").value = "";
+  setDoc(doc(db, "produtos", String(idFinal)), prodDados);
+  cancelarEdicaoProduto();
 }
 
 function selecionarCategoriaPDV(cat) {
@@ -481,7 +602,8 @@ function carregarProdutos() {
     .filter(p => p.ativo)
     .map(p => ({
       ...p,
-      categoria: p.categoria || "Conveniência",
+      // Migração transparente: se havia algum item salvo como "Conveniência", mapeia para "Cigarros"
+      categoria: p.categoria === "Conveniência" ? "Cigarros" : (p.categoria || "Cigarros"),
       subcategoria: p.subcategoria || "Diversos"
     }));
 
@@ -597,12 +719,17 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
       <div class="item-carrinho">
         <div>
           <span class="prod-cat-tag">${p.subcategoria}</span>
-          <strong>${p.nome}</strong> ${p.codigoInterno ? `<small>(${p.codigoInterno})</small>` : ""}
+          <strong>${p.nome}</strong> ${p.codigoInterno ? `<small class="mono">[${p.codigoInterno}]</small>` : ""}
           <div class="mono" style="color:var(--success); font-size:0.85rem; margin-top:0.15rem;">
             R$ ${p.precoUnitario.toFixed(2)}
           </div>
         </div>
-        <button class="btn btn-danger btn-sm" onclick="desativarProduto(${p.id})">Remover</button>
+        <div style="display:flex; gap:0.4rem;">
+          <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoProduto(${p.id})">
+            <i class="ri-edit-line"></i> Editar
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="desativarProduto(${p.id})">Remover</button>
+        </div>
       </div>
     `).join("");
 
@@ -618,7 +745,118 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
   }).join("");
 }
 
-// 8. TURNOS INDEPENDENTES POR USUÁRIO
+// 8. DASHBOARD ANALÍTICO (GRÁFICOS DE PICO E TOP PRODUTOS)
+function limparFiltroDashboard() {
+  const inputData = document.getElementById("filtro-data-dashboard");
+  if (inputData) inputData.value = "";
+  renderizarDashboard();
+}
+
+function renderizarDashboard() {
+  if (!usuarioLogado?.isAdmin) return;
+
+  const filtroData = document.getElementById("filtro-data-dashboard")?.value || "";
+  let vendasConcluidas = cacheVendas.filter(v => v.status === "CONCLUIDA");
+
+  if (filtroData) {
+    vendasConcluidas = vendasConcluidas.filter(v => {
+      const dataIso = new Date(v.dataHora).toISOString().split("T")[0];
+      return dataIso === filtroData;
+    });
+  }
+
+  const faturamentoTotal = vendasConcluidas.reduce((acc, v) => acc + v.valorFinal, 0);
+  let totalItensVendidos = 0;
+
+  // Contagem por hora (00h às 23h)
+  const vendasPorHora = Array(24).fill(0);
+  // Contagem de produtos
+  const rankingProdutos = {};
+
+  vendasConcluidas.forEach(v => {
+    const hora = new Date(v.dataHora).getHours();
+    vendasPorHora[hora] += 1;
+
+    v.itens.forEach(item => {
+      totalItensVendidos += item.quantidade;
+      rankingProdutos[item.nomeSnapshot] = (rankingProdutos[item.nomeSnapshot] || 0) + item.quantidade;
+    });
+  });
+
+  // Identifica horário de maior pico
+  const maxVendasHora = Math.max(...vendasPorHora);
+  const indicePico = maxVendasHora > 0 ? vendasPorHora.indexOf(maxVendasHora) : -1;
+  const textoPico = indicePico >= 0
+    ? `${String(indicePico).padStart(2, "0")}h (${maxVendasHora} ${maxVendasHora === 1 ? "venda" : "vendas"})`
+    : "---";
+
+  document.getElementById("kpi-faturamento").textContent = `R$ ${faturamentoTotal.toFixed(2)}`;
+  document.getElementById("kpi-qtd-vendas").textContent = String(vendasConcluidas.length);
+  document.getElementById("kpi-itens-vendidos").textContent = String(totalItensVendidos);
+  document.getElementById("kpi-hora-pico").textContent = textoPico;
+
+  const top10 = Object.entries(rankingProdutos)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+
+  if (typeof Chart === "undefined") return;
+
+  Chart.defaults.color = "#a1a1aa";
+  Chart.defaults.borderColor = "rgba(255, 255, 255, 0.07)";
+
+  const ctxPicos = document.getElementById("chart-picos")?.getContext("2d");
+  if (ctxPicos) {
+    if (chartInstanciaPicos) chartInstanciaPicos.destroy();
+    chartInstanciaPicos = new Chart(ctxPicos, {
+      type: "bar",
+      data: {
+        labels: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}h`),
+        datasets: [{
+          label: "Vendas no Horário",
+          data: vendasPorHora,
+          backgroundColor: "rgba(99, 102, 241, 0.72)",
+          borderColor: "#6366f1",
+          borderWidth: 1,
+          borderRadius: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  }
+
+  const ctxProdutos = document.getElementById("chart-produtos")?.getContext("2d");
+  if (ctxProdutos) {
+    if (chartInstanciaProdutos) chartInstanciaProdutos.destroy();
+    chartInstanciaProdutos = new Chart(ctxProdutos, {
+      type: "bar",
+      data: {
+        labels: top10.length ? top10.map(item => item[0]) : ["Sem vendas"],
+        datasets: [{
+          label: "Unidades Vendidas",
+          data: top10.length ? top10.map(item => item[1]) : [0],
+          backgroundColor: "rgba(16, 185, 129, 0.72)",
+          borderColor: "#10b981",
+          borderWidth: 1,
+          borderRadius: 5
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  }
+}
+
+// 9. TURNOS INDEPENDENTES POR USUÁRIO
 function verificarTurnoAbertoDoUsuario() {
   if (!usuarioLogado) return;
   turnoAtivo = cacheTurnos.find(
@@ -702,7 +940,7 @@ function atualizarStatusTurnoUI() {
   }
 }
 
-// 9. CARRINHO E FINALIZAÇÃO DE VENDA DIRETA
+// 10. CARRINHO E FINALIZAÇÃO DE VENDA DIRETA
 function adicionarAoCarrinho(produtoId, nomeSnapshot, precoUnitarioSnapshot) {
   const itemExistente = carrinho.find(i => i.produtoId === produtoId);
   if (itemExistente) {
@@ -810,7 +1048,7 @@ function confirmarImpressaoPosVenda(desejaImprimir) {
   }
 }
 
-// 10. HISTÓRICO, 2ª VIA DE VENDA E IMPRESSÃO DO TURNO COMPLETO
+// 11. HISTÓRICO, 2ª VIA DE VENDA E IMPRESSÃO DO TURNO COMPLETO
 function carregarHistoricoTurnos() {
   if (!usuarioLogado) return;
   const filtroData = document.getElementById("filtro-data").value;
@@ -885,7 +1123,7 @@ function carregarHistoricoTurnos() {
   }).join("");
 }
 
-// 11. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
+// 12. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
 function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   const v = cacheVendas.find(item => item.id === Number(vendaId));
   if (!v) return;
@@ -1000,12 +1238,17 @@ Object.assign(window, {
   cancelarEdicaoOperador,
   salvarOperador,
   removerOperador,
+  prepararEdicaoProduto,
+  cancelarEdicaoProduto,
   salvarProduto,
   atualizarSubcategoriasForm,
   selecionarCategoriaPDV,
   selecionarSubcategoriaPDV,
   carregarProdutos,
   desativarProduto,
+  processarEnterBuscaPDV,
+  renderizarDashboard,
+  limparFiltroDashboard,
   abrirTurno,
   fecharTurnoAtual,
   adicionarAoCarrinho,
