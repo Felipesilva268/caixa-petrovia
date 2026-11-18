@@ -105,14 +105,6 @@ body {
   margin-top: 0.85rem;
 }
 
-.hint-master {
-  display: block;
-  margin-top: 1.25rem;
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  opacity: 0.75;
-}
-
 .success-icon {
   background: rgba(16, 185, 129, 0.15) !important;
   color: var(--success) !important;
@@ -677,6 +669,55 @@ input:focus, select:focus { border-color: var(--primary); }
   padding: 0.45rem 0;
   font-size: 0.84rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+/* DASHBOARD DE PICO E GRÁFICOS */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.85rem;
+  margin-top: 1.15rem;
+}
+
+.kpi-card {
+  background: rgba(9, 9, 11, 0.6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.kpi-card span {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.kpi-card strong {
+  font-size: 1.25rem;
+  color: #34d399;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.chart-container {
+  position: relative;
+  height: 320px;
+  width: 100%;
+  margin-top: 1rem;
+}
+
+@media (max-width: 980px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; }
 }
 
 /* =========================================================
