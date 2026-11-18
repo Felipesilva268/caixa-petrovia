@@ -43,8 +43,14 @@ let turnoAtivo = null;
 let carrinho = [];
 let ultimaVendaId = null;
 
+// Estados de Navegação e Pagamento por Teclado (Com suporte a Pagamento Misto)
 let categoriaAtivaPDV = "TODAS";
 let subcategoriaAtivaPDV = "TODAS";
+let indiceFocoPDV = -1;
+
+let pagamentoPassoAtual = 1; // 1: Escolha Forma, 1.1: Digitar Valor Parcial, 2: Escolher Bandeira
+let pagamentoFormaSelecionada = null;
+let pagamentosParciaisVenda = []; // Armazena as formas parciais ex: [{forma, bandeira, valor}]
 
 let chartInstanciaPicos = null;
 let chartInstanciaProdutos = null;
@@ -59,6 +65,12 @@ const MAPA_CATEGORIAS = {
   "Cigarros": ["Carteira", "Unidade", "Carvão", "Diversos"]
 };
 
+// BANDEIRAS EM ORDEM ALFABÉTICA (SEMPRE 1x À VISTA)
+const BANDEIRAS_PAGAMENTO = {
+  CREDITO: ["Amex", "Elo", "Master", "Visa"],
+  DEBITO: ["Elo", "Master", "Visa"]
+};
+
 function gerarProximoId(lista) {
   if (!lista.length) return 1;
   return Math.max(...lista.map(item => Number(item.id) || 0)) + 1;
@@ -68,6 +80,22 @@ function obterNomePerfil(usuarioId, nomeSalvo) {
   if (usuarioId === "admin") return configMaster.nome;
   const op = cacheUsuarios.find(u => u.id === Number(usuarioId));
   return op ? op.nome : (nomeSalvo || "Operador");
+}
+
+function formatarPagamentoTexto(venda) {
+  if (venda.pagamentos && venda.pagamentos.length > 0) {
+    if (venda.pagamentos.length === 1) {
+      const p = venda.pagamentos[0];
+      if (p.forma === "DINHEIRO" || p.forma === "PIX") return p.forma;
+      return `${p.forma} - ${(p.bandeira || "OUTRA").toUpperCase()} ${p.forma === 'CREDITO' ? '(1x)' : ''}`;
+    }
+    return "MISTO (" + venda.pagamentos.map(p => `${p.forma}: R$ ${p.valor.toFixed(2)}`).join(" | ") + ")";
+  }
+  if (!venda.formaPagamento) return "Não informado";
+  if (venda.formaPagamento === "DINHEIRO" || venda.formaPagamento === "PIX") return venda.formaPagamento;
+  if (venda.formaPagamento === "CREDITO") return `CRÉDITO - ${(venda.bandeira || "OUTRA").toUpperCase()} (1x)`;
+  if (venda.formaPagamento === "DEBITO") return `DÉBITO - ${(venda.bandeira || "OUTRA").toUpperCase()}`;
+  return venda.formaPagamento;
 }
 
 // 2. ESCUTA EM TEMPO REAL DO FIREBASE
@@ -97,6 +125,7 @@ function iniciarSincronizacaoFirebase() {
     if (usuarioLogado) {
       atualizarStatusTurnoUI();
       carregarHistoricoTurnos();
+      carregarAbaVendas();
     }
   });
 
@@ -110,6 +139,7 @@ function iniciarSincronizacaoFirebase() {
     if (usuarioLogado) {
       verificarTurnoAbertoDoUsuario();
       carregarHistoricoTurnos();
+      carregarAbaVendas();
     }
   });
 
@@ -117,6 +147,7 @@ function iniciarSincronizacaoFirebase() {
     cacheVendas = snapshot.docs.map(d => d.data());
     if (usuarioLogado) {
       carregarHistoricoTurnos();
+      carregarAbaVendas();
       if (document.getElementById("tela-dashboard")?.classList.contains("active")) {
         renderizarDashboard();
       }
@@ -155,14 +186,23 @@ function atualizarSubcategoriasForm(subParaSelecionar = null) {
   }
 }
 
-// 3. MOTOR DE ATALHOS DE TECLADO (100% SHORTCUTS E BIPADOR)
+// 3. MOTOR DE ATALHOS DE TECLADO (100% SHORTCUTS, SETAS E PAGAMENTO MISTO)
 window.addEventListener("keydown", (e) => {
   const modalBloqueio = document.getElementById("modal-bloqueio");
+  const modalCancelar = document.getElementById("modal-cancelar-venda");
   const modalPosVenda = document.getElementById("modal-pos-venda");
+  const modalPagamento = document.getElementById("modal-pagamento");
 
   if (modalBloqueio.classList.contains("active")) return;
 
-  // Se o modal pós-venda estiver aberto: Enter imprime, ESC cancela e bloqueia
+  if (modalCancelar.classList.contains("active")) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      fecharModalCancelamento();
+    }
+    return;
+  }
+
   if (modalPosVenda.classList.contains("active")) {
     if (e.key === "Escape") {
       e.preventDefault();
@@ -174,66 +214,183 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
-  switch (e.key) {
-    case "Escape":
+  if (modalPagamento.classList.contains("active")) {
+    if (e.key === "Escape") {
       e.preventDefault();
-      bloquearCaixa();
-      break;
-    case "F2":
-      e.preventDefault();
-      if (document.getElementById("tela-pdv").classList.contains("active")) {
-        finalizarVenda();
+      if (pagamentoPassoAtual === 1.1 || pagamentoPassoAtual === 2) {
+        voltarParaEscolhaForma();
+      } else {
+        fecharModalPagamento();
       }
-      break;
-    case "F4":
-      e.preventDefault();
-      if (document.getElementById("tela-pdv").classList.contains("active")) {
-        const inputBusca = document.getElementById("busca-produto-pdv");
-        if (inputBusca) {
-          inputBusca.focus();
-          inputBusca.select();
+      return;
+    }
+
+    if (pagamentoPassoAtual === 1) {
+      if (e.key === "1") { e.preventDefault(); selecionarFormaPagamento("DINHEIRO"); }
+      else if (e.key === "2") { e.preventDefault(); selecionarFormaPagamento("PIX"); }
+      else if (e.key === "3") { e.preventDefault(); selecionarFormaPagamento("CREDITO"); }
+      else if (e.key === "4") { e.preventDefault(); selecionarFormaPagamento("DEBITO"); }
+      else if (e.key === "F2") {
+        e.preventDefault();
+        const btnConcluir = document.getElementById("btn-concluir-pagamento-misto");
+        if (btnConcluir && !btnConcluir.classList.contains("hidden")) {
+          finalizarVendaComposta();
         }
       }
-      break;
-    case "F9":
-      e.preventDefault();
-      if (document.getElementById("tela-pdv").classList.contains("active")) {
-        limparCarrinho();
+    } else if (pagamentoPassoAtual === 1.1) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirmarValorParcial();
       }
-      break;
+    } else if (pagamentoPassoAtual === 2) {
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        voltarParaEscolhaForma();
+        return;
+      }
+      const bandeiras = BANDEIRAS_PAGAMENTO[pagamentoFormaSelecionada] || [];
+      const idx = parseInt(e.key, 10) - 1;
+      if (!isNaN(idx) && idx >= 0 && idx < bandeiras.length) {
+        e.preventDefault();
+        selecionarBandeiraPagamento(bandeiras[idx]);
+      }
+    }
+    return;
+  }
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    bloquearCaixa();
+    return;
+  }
+
+  const noPDV = document.getElementById("tela-pdv").classList.contains("active") && turnoAtivo;
+  if (!noPDV) return;
+
+  if (e.key === "F2") {
+    e.preventDefault();
+    abrirModalPagamento();
+    return;
+  }
+
+  if (e.key === "F4") {
+    e.preventDefault();
+    const inputBusca = document.getElementById("busca-produto-pdv");
+    if (inputBusca) {
+      inputBusca.focus();
+      inputBusca.select();
+    }
+    return;
+  }
+
+  if (e.key === "F9") {
+    e.preventDefault();
+    limparCarrinho();
+    return;
+  }
+
+  const elAtivo = document.activeElement;
+  const estaNoDescontoOuSelect = elAtivo && (elAtivo.id === "input-desconto" || elAtivo.tagName === "SELECT");
+  if (estaNoDescontoOuSelect) return;
+
+  if (["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(e.key)) {
+    if (elAtivo?.id === "busca-produto-pdv" && (e.key === "ArrowLeft" || e.key === "ArrowRight") && elAtivo.value.length > 0 && indiceFocoPDV === -1) {
+      return;
+    }
+    e.preventDefault();
+    moverFocoProdutoPDV(e.key);
+    return;
+  }
+
+  if (e.key === "Enter" && elAtivo?.id !== "busca-produto-pdv" && indiceFocoPDV >= 0) {
+    e.preventDefault();
+    adicionarProdutoFocadoPDV();
   }
 });
 
-// Suporte a Leitor de Código de Barras / Enter direto na barra de busca
-function processarEnterBuscaPDV(e) {
+// Navegação por Teclado nos Cards do PDV
+function obterCardsPDV() {
+  return Array.from(document.querySelectorAll("#grade-produtos-pdv .produto-card"));
+}
+
+function atualizarDestaqueCardPDV() {
+  const cards = obterCardsPDV();
+  cards.forEach((card, i) => {
+    if (i === indiceFocoPDV) {
+      card.classList.add("foco-teclado");
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else {
+      card.classList.remove("foco-teclado");
+    }
+  });
+}
+
+function moverFocoProdutoPDV(tecla) {
+  const cards = obterCardsPDV();
+  if (!cards.length) {
+    indiceFocoPDV = -1;
+    return;
+  }
+
+  if (indiceFocoPDV === -1) {
+    indiceFocoPDV = 0;
+    atualizarDestaqueCardPDV();
+    return;
+  }
+
+  if (tecla === "ArrowRight" || tecla === "ArrowDown") {
+    indiceFocoPDV = (indiceFocoPDV + 1) % cards.length;
+  } else if (tecla === "ArrowLeft" || tecla === "ArrowUp") {
+    indiceFocoPDV = (indiceFocoPDV - 1 + cards.length) % cards.length;
+  }
+
+  atualizarDestaqueCardPDV();
+}
+
+function adicionarProdutoFocadoPDV() {
+  const cards = obterCardsPDV();
+  if (indiceFocoPDV >= 0 && indiceFocoPDV < cards.length) {
+    cards[indiceFocoPDV].click();
+  }
+}
+
+function aoDigitarBuscaPDV() {
+  indiceFocoPDV = -1;
+  carregarProdutos();
+  const cards = obterCardsPDV();
+  if (cards.length > 0 && document.getElementById("busca-produto-pdv").value.trim() !== "") {
+    indiceFocoPDV = 0;
+    atualizarDestaqueCardPDV();
+  }
+}
+
+function processarTeclasBuscaPDV(e) {
   if (e.key !== "Enter") return;
   e.preventDefault();
 
   const input = document.getElementById("busca-produto-pdv");
   const termo = (input.value || "").trim().toLowerCase();
-  if (!termo) return;
 
-  const ativos = cacheProdutos.filter(p => p.ativo);
-
-  // 1º Tenta achar pelo código exato (Bipador USB)
-  let encontrado = ativos.find(p => p.codigoInterno && p.codigoInterno.toLowerCase() === termo);
-
-  // 2º Se não achou por código, mas só restou 1 produto filtrado na tela, adiciona ele
-  if (!encontrado) {
-    const filtrados = ativos.filter(p =>
-      p.nome.toLowerCase().includes(termo) ||
-      (p.subcategoria && p.subcategoria.toLowerCase().includes(termo)) ||
-      (p.codigoInterno && p.codigoInterno.toLowerCase().includes(termo))
-    );
-    if (filtrados.length === 1) {
-      encontrado = filtrados[0];
+  if (termo) {
+    const ativos = cacheProdutos.filter(p => p.ativo);
+    const porCodigo = ativos.find(p => p.codigoInterno && p.codigoInterno.toLowerCase() === termo);
+    if (porCodigo) {
+      const sub = porCodigo.subcategoria || "Diversos";
+      adicionarAoCarrinho(porCodigo.id, `${porCodigo.nome} (${sub})`, porCodigo.precoUnitario);
+      input.value = "";
+      indiceFocoPDV = -1;
+      carregarProdutos();
+      return;
     }
   }
 
-  if (encontrado) {
-    const sub = encontrado.subcategoria || "Diversos";
-    adicionarAoCarrinho(encontrado.id, `${encontrado.nome} (${sub})`, encontrado.precoUnitario);
+  const cards = obterCardsPDV();
+  if (indiceFocoPDV >= 0 && indiceFocoPDV < cards.length) {
+    cards[indiceFocoPDV].click();
+  } else if (cards.length === 1) {
+    cards[0].click();
     input.value = "";
+    indiceFocoPDV = -1;
     carregarProdutos();
   }
 }
@@ -247,7 +404,7 @@ function focarInputSenha() {
 
 // 4. AUTENTICAÇÃO TRANSACIONAL E BLOQUEIO (ESC)
 function autenticarOperador(e) {
-  e.preventDefault();
+  if (e) e.preventDefault();
   const input = document.getElementById("input-senha-acesso");
   const senhaDigitada = input.value.trim();
   const msgErro = document.getElementById("msg-erro-login");
@@ -273,6 +430,7 @@ function liberarTerminal() {
   limparCarrinho();
   categoriaAtivaPDV = "TODAS";
   subcategoriaAtivaPDV = "TODAS";
+  indiceFocoPDV = -1;
 
   document.getElementById("input-senha-acesso").value = "";
   document.getElementById("msg-erro-login").classList.add("hidden");
@@ -299,14 +457,18 @@ function liberarTerminal() {
   verificarTurnoAbertoDoUsuario();
   carregarProdutos();
   carregarHistoricoTurnos();
+  carregarAbaVendas();
 }
 
 function bloquearCaixa() {
   limparCarrinho();
   cancelarEdicaoOperador();
   cancelarEdicaoProduto();
+  fecharModalPagamento();
+  fecharModalCancelamento();
   usuarioLogado = null;
   turnoAtivo = null;
+  indiceFocoPDV = -1;
 
   document.getElementById("modal-pos-venda").classList.remove("active");
   document.getElementById("modal-bloqueio").classList.add("active");
@@ -321,6 +483,7 @@ function navegar(aba, btnElement) {
   document.getElementById(`tela-${aba}`).classList.add("active");
   if (btnElement) btnElement.classList.add("active");
 
+  if (aba === "vendas") carregarAbaVendas();
   if (aba === "turnos") carregarHistoricoTurnos();
   if (aba === "produtos") carregarProdutos();
   if (aba === "dashboard" && usuarioLogado?.isAdmin) renderizarDashboard();
@@ -517,7 +680,7 @@ function salvarProduto(e) {
 
   const idFinal = idEdicao ? Number(idEdicao) : gerarProximoId(cacheProdutos);
 
-  const prodDados = {
+  setDoc(doc(db, "produtos", String(idFinal)), {
     id: idFinal,
     nome,
     categoria,
@@ -525,20 +688,21 @@ function salvarProduto(e) {
     precoUnitario,
     codigoInterno,
     ativo: true
-  };
+  });
 
-  setDoc(doc(db, "produtos", String(idFinal)), prodDados);
   cancelarEdicaoProduto();
 }
 
 function selecionarCategoriaPDV(cat) {
   categoriaAtivaPDV = cat;
   subcategoriaAtivaPDV = "TODAS";
+  indiceFocoPDV = -1;
   carregarProdutos();
 }
 
 function selecionarSubcategoriaPDV(sub) {
   subcategoriaAtivaPDV = sub;
+  indiceFocoPDV = -1;
   carregarProdutos();
 }
 
@@ -602,7 +766,6 @@ function carregarProdutos() {
     .filter(p => p.ativo)
     .map(p => ({
       ...p,
-      // Migração transparente: se havia algum item salvo como "Conveniência", mapeia para "Cigarros"
       categoria: p.categoria === "Conveniência" ? "Cigarros" : (p.categoria || "Cigarros"),
       subcategoria: p.subcategoria || "Diversos"
     }));
@@ -637,6 +800,7 @@ function renderizarGradePDV(produtos, criterioOrdem) {
   const container = document.getElementById("grade-produtos-pdv");
   if (!produtos.length) {
     container.innerHTML = `<p style="color:var(--text-muted);">Nenhum produto cadastrado ou encontrado para este filtro.</p>`;
+    indiceFocoPDV = -1;
     return;
   }
 
@@ -694,6 +858,7 @@ function renderizarGradePDV(produtos, criterioOrdem) {
   }).join("");
 
   container.innerHTML = secoesHTML;
+  if (indiceFocoPDV >= 0) atualizarDestaqueCardPDV();
 }
 
 function renderizarListaCadastro(produtos, criterioOrdem) {
@@ -745,7 +910,346 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
   }).join("");
 }
 
-// 8. DASHBOARD ANALÍTICO (GRÁFICOS DE PICO E TOP PRODUTOS)
+// 8. MODAL DE PAGAMENTO MISTO / PARCIAL E FINALIZAÇÃO
+function abrirModalPagamento() {
+  if (!usuarioLogado || !turnoAtivo || !carrinho.length) return;
+
+  pagamentoPassoAtual = 1;
+  pagamentoFormaSelecionada = null;
+  pagamentosParciaisVenda = [];
+
+  atualizarInterfaceModalPagamento();
+  document.getElementById("modal-pagamento").classList.add("active");
+}
+
+function fecharModalPagamento() {
+  document.getElementById("modal-pagamento").classList.remove("active");
+  pagamentoPassoAtual = 1;
+  pagamentoFormaSelecionada = null;
+  pagamentosParciaisVenda = [];
+}
+
+function calcularTotalVendaCarrinho() {
+  const bruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
+  const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
+  return Math.max(0, bruto - desconto);
+}
+
+function calcularValorPagoParcialmente() {
+  return pagamentosParciaisVenda.reduce((acc, p) => acc + p.valor, 0);
+}
+
+function atualizarInterfaceModalPagamento() {
+  const totalVenda = calcularTotalVendaCarrinho();
+  const totalPago = calcularValorPagoParcialmente();
+  const restante = Math.max(0, totalVenda - totalPago);
+
+  document.getElementById("pag-val-total").textContent = `R$ ${totalVenda.toFixed(2)}`;
+  document.getElementById("pag-val-pago").textContent = `R$ ${totalPago.toFixed(2)}`;
+  document.getElementById("pag-val-restante").textContent = `R$ ${restante.toFixed(2)}`;
+
+  const listaEl = document.getElementById("lista-pagamentos-parciais");
+  if (!pagamentosParciaisVenda.length) {
+    listaEl.innerHTML = `<small style="color:var(--text-muted);">Nenhum pagamento adicionado ainda.</small>`;
+  } else {
+    listaEl.innerHTML = pagamentosParciaisVenda.map((p, idx) => `
+      <div class="parcial-item-tag mono">
+        <span>${p.forma} ${p.bandeira ? `(${p.bandeira})` : ''}: R$ ${p.valor.toFixed(2)}</span>
+        <button type="button" class="btn btn-secondary btn-sm" style="padding:0.1rem 0.3rem;" onclick="removerPagamentoParcial(${idx})">✕</button>
+      </div>
+    `).join("");
+  }
+
+  const btnConcluir = document.getElementById("btn-concluir-pagamento-misto");
+  const passo1El = document.getElementById("pagamento-passo-1");
+  const passoValorEl = document.getElementById("pagamento-passo-valor");
+  const passo2El = document.getElementById("pagamento-passo-2");
+
+  passo1El.classList.add("hidden");
+  passoValorEl.classList.add("hidden");
+  passo2El.classList.add("hidden");
+
+  if (pagamentoPassoAtual === 1) {
+    passo1El.classList.remove("hidden");
+    if (restante <= 0.005) {
+      btnConcluir.classList.remove("hidden");
+    } else {
+      btnConcluir.classList.add("hidden");
+    }
+  } else if (pagamentoPassoAtual === 1.1) {
+    passoValorEl.classList.remove("hidden");
+    const inputVal = document.getElementById("input-valor-parcial");
+    inputVal.value = restante.toFixed(2);
+    setTimeout(() => { inputVal.focus(); inputVal.select(); }, 50);
+  } else if (pagamentoPassoAtual === 2) {
+    passo2El.classList.remove("hidden");
+  }
+}
+
+function selecionarFormaPagamento(forma) {
+  const totalVenda = calcularTotalVendaCarrinho();
+  const totalPago = calcularValorPagoParcialmente();
+  const restante = Math.max(0, totalVenda - totalPago);
+
+  if (restante <= 0.005) return;
+
+  pagamentoFormaSelecionada = forma;
+  pagamentoPassoAtual = 1.1; // Vai para a tela de confirmar o valor parcial
+  atualizarInterfaceModalPagamento();
+}
+
+function voltarParaEscolhaForma() {
+  pagamentoPassoAtual = 1;
+  pagamentoFormaSelecionada = null;
+  atualizarInterfaceModalPagamento();
+}
+
+function confirmarValorParcial() {
+  const inputVal = document.getElementById("input-valor-parcial");
+  const valorDigitado = parseFloat(inputVal.value) || 0;
+  const totalVenda = calcularTotalVendaCarrinho();
+  const totalPago = calcularValorPagoParcialmente();
+  const restante = Math.max(0, totalVenda - totalPago);
+
+  if (valorDigitado <= 0 || valorDigitado > restante + 0.005) {
+    alert(`Valor inválido. O restante a pagar é R$ ${restante.toFixed(2)}.`);
+    inputVal.focus();
+    return;
+  }
+
+  const forma = pagamentoFormaSelecionada;
+  if (forma === "DINHEIRO" || forma === "PIX") {
+    pagamentosParciaisVenda.push({
+      forma,
+      bandeira: null,
+      valor: valorDigitado
+    });
+    voltarParaEscolhaForma();
+  } else {
+    // Vai para a escolha de bandeira (Crédito ou Débito)
+    pagamentoPassoAtual = 2;
+    const bandeiras = BANDEIRAS_PAGAMENTO[forma] || [];
+    const titulo = forma === "CREDITO"
+      ? `Crédito (1x) [R$ ${valorDigitado.toFixed(2)}] — Escolha a bandeira:`
+      : `Débito [R$ ${valorDigitado.toFixed(2)}] — Escolha a bandeira:`;
+
+    document.getElementById("pagamento-titulo-bandeira").textContent = titulo;
+    document.getElementById("pagamento-lista-bandeiras").innerHTML = bandeiras.map((bandeira, idx) => `
+      <button type="button" class="btn-pag-opcao" onclick="selecionarBandeiraComValor('${forma}', '${bandeira}', ${valorDigitado})">
+        <span class="tecla-badge mono">${idx + 1}</span>
+        <span>${bandeira}</span>
+      </button>
+    `).join("");
+
+    document.getElementById("pagamento-passo-1").classList.add("hidden");
+    document.getElementById("pagamento-passo-valor").classList.add("hidden");
+    document.getElementById("pagamento-passo-2").classList.remove("hidden");
+  }
+}
+
+function selecionarBandeiraComValor(forma, bandeira, valor) {
+  pagamentosParciaisVenda.push({
+    forma,
+    bandeira,
+    valor
+  });
+  voltarParaEscolhaForma();
+}
+
+function removerPagamentoParcial(index) {
+  pagamentosParciaisVenda.splice(index, 1);
+  voltarParaEscolhaForma();
+}
+
+function finalizarVendaComposta() {
+  const totalVenda = calcularTotalVendaCarrinho();
+  const totalPago = calcularValorPagoParcialmente();
+
+  if (Math.abs(totalVenda - totalPago) > 0.01) {
+    alert("O total pago ainda não cobre o valor da venda!");
+    return;
+  }
+
+  fecharModalPagamento();
+
+  const valorBruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
+  const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
+  const valorFinal = Math.max(0, valorBruto - desconto);
+
+  const novoId = gerarProximoId(cacheVendas);
+  const venda = {
+    id: novoId,
+    turnoId: turnoAtivo.id,
+    usuarioId: usuarioLogado.id,
+    operadorNome: usuarioLogado.nome,
+    dataHora: Date.now(),
+    valorBruto,
+    desconto,
+    valorFinal,
+    pagamentos: [...pagamentosParciaisVenda],
+    status: "CONCLUIDA",
+    itens: [...carrinho]
+  };
+
+  setDoc(doc(db, "vendas", String(novoId)), venda);
+
+  ultimaVendaId = novoId;
+  document.getElementById("resumo-modal-venda").innerHTML = `
+    <div>Total: R$ ${valorFinal.toFixed(2)}</div>
+    <div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">${formatarPagamentoTexto(venda)}</div>
+  `;
+  document.getElementById("modal-pos-venda").classList.add("active");
+  document.getElementById("btn-confirmar-impressao").focus();
+}
+
+function confirmarImpressaoPosVenda(desejaImprimir) {
+  document.getElementById("modal-pos-venda").classList.remove("active");
+
+  if (desejaImprimir && ultimaVendaId) {
+    imprimirCupomVenda80mm(ultimaVendaId, () => {
+      bloquearCaixa();
+    });
+  } else {
+    bloquearCaixa();
+  }
+}
+
+// 9. ABA DE VENDAS E CANCELAMENTO COM AUDITORIA
+function podeCancelarVenda(venda) {
+  if (!usuarioLogado || venda.status === "CANCELADA") return false;
+  if (usuarioLogado.isAdmin) return true;
+  return Boolean(turnoAtivo && venda.turnoId === turnoAtivo.id && venda.usuarioId === usuarioLogado.id);
+}
+
+function limparFiltrosVendas() {
+  const fData = document.getElementById("filtro-vendas-data");
+  const fPag = document.getElementById("filtro-vendas-pagamento");
+  const fStat = document.getElementById("filtro-vendas-status");
+  if (fData) fData.value = "";
+  if (fPag) fPag.value = "TODOS";
+  if (fStat) fStat.value = "TODAS";
+  carregarAbaVendas();
+}
+
+function carregarAbaVendas() {
+  if (!usuarioLogado) return;
+  const container = document.getElementById("lista-vendas-registradas");
+  if (!container) return;
+
+  const filtroData = document.getElementById("filtro-vendas-data")?.value || "";
+  const filtroPag = document.getElementById("filtro-vendas-pagamento")?.value || "TODOS";
+  const filtroStatus = document.getElementById("filtro-vendas-status")?.value || "TODAS";
+
+  let vendas = [...cacheVendas]
+    .filter(v => usuarioLogado.isAdmin || v.usuarioId === usuarioLogado.id)
+    .sort((a, b) => b.dataHora - a.dataHora);
+
+  if (filtroData) {
+    vendas = vendas.filter(v => new Date(v.dataHora).toISOString().split("T")[0] === filtroData);
+  }
+  if (filtroPag !== "TODOS") {
+    if (filtroPag === "MISTO") {
+      vendas = vendas.filter(v => v.pagamentos && v.pagamentos.length > 1);
+    } else {
+      vendas = vendas.filter(v => {
+        if (v.pagamentos && v.pagamentos.length === 1) return v.pagamentos[0].forma === filtroPag;
+        return v.formaPagamento === filtroPag;
+      });
+    }
+  }
+  if (filtroStatus !== "TODAS") {
+    vendas = vendas.filter(v => v.status === filtroStatus);
+  }
+
+  if (!vendas.length) {
+    container.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem;">Nenhuma venda encontrada para este filtro.</p>`;
+    return;
+  }
+
+  container.innerHTML = vendas.map(v => {
+    const cancelada = v.status === "CANCELADA";
+    const nomeOperador = obterNomePerfil(v.usuarioId, v.operadorNome);
+    const permiteCancelar = podeCancelarVenda(v);
+
+    return `
+      <div class="venda-card ${cancelada ? "venda-cancelada" : ""}">
+        <div style="flex: 1; min-width: 240px;">
+          <div class="venda-meta-row">
+            <strong class="mono">#${v.id}</strong>
+            <span class="badge ${cancelada ? "badge-closed" : "badge-open"}">${v.status}</span>
+            <span class="badge badge-pagamento">${formatarPagamentoTexto(v)}</span>
+            <span style="font-size:0.8rem; color:var(--text-muted);">
+              ${new Date(v.dataHora).toLocaleString("pt-BR")} • ${nomeOperador} (Turno #${v.turnoId})
+            </span>
+          </div>
+          <div class="venda-itens-texto">
+            ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}
+          </div>
+          ${cancelada ? `
+            <div class="motivo-cancelamento">
+              <i class="ri-close-circle-line"></i> Cancelada por ${v.canceladoPor || "Sistema"} em ${v.dataHoraCancelamento ? new Date(v.dataHoraCancelamento).toLocaleString("pt-BR") : "---"} — Motivo: "${v.motivoCancelamento || "Não informado"}"
+            </div>
+          ` : ""}
+        </div>
+
+        <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
+          <strong class="mono venda-valor-texto" style="font-size:1.05rem; color:#34d399;">
+            R$ ${v.valorFinal.toFixed(2)}
+          </strong>
+          <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm(${v.id})">
+            <i class="ri-printer-line"></i> 2ª Via
+          </button>
+          ${permiteCancelar ? `
+            <button class="btn btn-danger btn-sm" onclick="abrirModalCancelamento(${v.id})">
+              <i class="ri-close-circle-line"></i> Cancelar
+            </button>
+          ` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function abrirModalCancelamento(vendaId) {
+  const v = cacheVendas.find(item => item.id === Number(vendaId));
+  if (!v || !podeCancelarVenda(v)) return;
+
+  document.getElementById("cancelar-venda-id").value = v.id;
+  document.getElementById("cancelar-venda-motivo").value = "";
+  document.getElementById("cancelar-venda-info").textContent =
+    `Venda #${v.id} — R$ ${v.valorFinal.toFixed(2)} (${formatarPagamentoTexto(v)}). Informe o motivo do cancelamento:`;
+
+  document.getElementById("modal-cancelar-venda").classList.add("active");
+  setTimeout(() => document.getElementById("cancelar-venda-motivo").focus(), 60);
+}
+
+function fecharModalCancelamento() {
+  document.getElementById("modal-cancelar-venda").classList.remove("active");
+}
+
+function confirmarCancelamentoVenda(e) {
+  if (e) e.preventDefault();
+  const vendaId = Number(document.getElementById("cancelar-venda-id").value);
+  const motivo = document.getElementById("cancelar-venda-motivo").value.trim();
+
+  const v = cacheVendas.find(item => item.id === vendaId);
+  if (!v || !podeCancelarVenda(v)) {
+    fecharModalCancelamento();
+    return;
+  }
+
+  setDoc(doc(db, "vendas", String(vendaId)), {
+    ...v,
+    status: "CANCELADA",
+    motivoCancelamento: motivo || "Cancelamento operacional",
+    canceladoPor: usuarioLogado.nome,
+    dataHoraCancelamento: Date.now()
+  });
+
+  fecharModalCancelamento();
+}
+
+// 10. DASHBOARD ANALÍTICO
 function limparFiltroDashboard() {
   const inputData = document.getElementById("filtro-data-dashboard");
   if (inputData) inputData.value = "";
@@ -768,9 +1272,7 @@ function renderizarDashboard() {
   const faturamentoTotal = vendasConcluidas.reduce((acc, v) => acc + v.valorFinal, 0);
   let totalItensVendidos = 0;
 
-  // Contagem por hora (00h às 23h)
   const vendasPorHora = Array(24).fill(0);
-  // Contagem de produtos
   const rankingProdutos = {};
 
   vendasConcluidas.forEach(v => {
@@ -783,7 +1285,6 @@ function renderizarDashboard() {
     });
   });
 
-  // Identifica horário de maior pico
   const maxVendasHora = Math.max(...vendasPorHora);
   const indicePico = maxVendasHora > 0 ? vendasPorHora.indexOf(maxVendasHora) : -1;
   const textoPico = indicePico >= 0
@@ -856,7 +1357,7 @@ function renderizarDashboard() {
   }
 }
 
-// 9. TURNOS INDEPENDENTES POR USUÁRIO
+// 11. TURNOS INDEPENDENTES POR USUÁRIO
 function verificarTurnoAbertoDoUsuario() {
   if (!usuarioLogado) return;
   turnoAtivo = cacheTurnos.find(
@@ -868,7 +1369,7 @@ function verificarTurnoAbertoDoUsuario() {
 function abrirTurno(tipoTurno) {
   if (!usuarioLogado) return;
   const novoId = gerarProximoId(cacheTurnos);
-  const novoTurno = {
+  setDoc(doc(db, "turnos", String(novoId)), {
     id: novoId,
     usuarioId: usuarioLogado.id,
     operadorNome: usuarioLogado.nome,
@@ -876,23 +1377,20 @@ function abrirTurno(tipoTurno) {
     dataHoraAbertura: Date.now(),
     dataHoraFechamento: null,
     status: "ABERTO"
-  };
-
-  setDoc(doc(db, "turnos", String(novoId)), novoTurno);
+  });
 }
 
 function fecharTurnoAtual(imprimirFechamento = false) {
   if (!turnoAtivo) return;
   const turnoIdParaImprimir = turnoAtivo.id;
 
-  const turnoEncerrado = {
+  setDoc(doc(db, "turnos", String(turnoAtivo.id)), {
     ...turnoAtivo,
     operadorNome: obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome),
     status: "FECHADO",
     dataHoraFechamento: Date.now()
-  };
+  });
 
-  setDoc(doc(db, "turnos", String(turnoAtivo.id)), turnoEncerrado);
   limparCarrinho();
 
   if (imprimirFechamento) {
@@ -940,7 +1438,7 @@ function atualizarStatusTurnoUI() {
   }
 }
 
-// 10. CARRINHO E FINALIZAÇÃO DE VENDA DIRETA
+// 12. CARRINHO
 function adicionarAoCarrinho(produtoId, nomeSnapshot, precoUnitarioSnapshot) {
   const itemExistente = carrinho.find(i => i.produtoId === produtoId);
   if (itemExistente) {
@@ -1007,48 +1505,7 @@ function atualizarCarrinhoUI() {
   document.getElementById("valor-final").textContent = `R$ ${final.toFixed(2)}`;
 }
 
-function finalizarVenda() {
-  if (!usuarioLogado || !turnoAtivo || !carrinho.length) return;
-
-  const valorBruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
-  const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
-  const valorFinal = Math.max(0, valorBruto - desconto);
-
-  const novoId = gerarProximoId(cacheVendas);
-  const venda = {
-    id: novoId,
-    turnoId: turnoAtivo.id,
-    usuarioId: usuarioLogado.id,
-    operadorNome: usuarioLogado.nome,
-    dataHora: Date.now(),
-    valorBruto,
-    desconto,
-    valorFinal,
-    status: "CONCLUIDA",
-    itens: [...carrinho]
-  };
-
-  setDoc(doc(db, "vendas", String(novoId)), venda);
-
-  ultimaVendaId = novoId;
-  document.getElementById("resumo-modal-venda").textContent = `Total: R$ ${valorFinal.toFixed(2)}`;
-  document.getElementById("modal-pos-venda").classList.add("active");
-  document.getElementById("btn-confirmar-impressao").focus();
-}
-
-function confirmarImpressaoPosVenda(desejaImprimir) {
-  document.getElementById("modal-pos-venda").classList.remove("active");
-
-  if (desejaImprimir && ultimaVendaId) {
-    imprimirCupomVenda80mm(ultimaVendaId, () => {
-      bloquearCaixa();
-    });
-  } else {
-    bloquearCaixa();
-  }
-}
-
-// 11. HISTÓRICO, 2ª VIA DE VENDA E IMPRESSÃO DO TURNO COMPLETO
+// 13. HISTÓRICO DE TURNOS
 function carregarHistoricoTurnos() {
   if (!usuarioLogado) return;
   const filtroData = document.getElementById("filtro-data").value;
@@ -1075,13 +1532,15 @@ function carregarHistoricoTurnos() {
     const vendasTurno = cacheVendas
       .filter(v => v.turnoId === t.id && v.status === "CONCLUIDA")
       .sort((a, b) => a.dataHora - b.dataHora);
+    const canceladasTurno = cacheVendas.filter(v => v.turnoId === t.id && v.status === "CANCELADA");
     const totalTurno = vendasTurno.reduce((acc, v) => acc + v.valorFinal, 0);
 
     const listaVendasHTML = vendasTurno.length
       ? vendasTurno.map(v => `
           <div class="venda-linha">
             <div>
-              <span class="mono">#${v.id} (${new Date(v.dataHora).toLocaleTimeString("pt-BR")})</span> —
+              <span class="mono">#${v.id} (${new Date(v.dataHora).toLocaleTimeString("pt-BR")})</span>
+              <span class="badge badge-pagamento" style="margin:0 0.3rem;">${formatarPagamentoTexto(v)}</span>
               ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}
             </div>
             <div style="display:flex; align-items:center; gap:0.6rem;">
@@ -1092,7 +1551,7 @@ function carregarHistoricoTurnos() {
             </div>
           </div>
         `).join("")
-      : `<small style="color:var(--text-muted);">Nenhuma venda registrada neste turno.</small>`;
+      : `<small style="color:var(--text-muted);">Nenhuma venda concluída neste turno.</small>`;
 
     return `
       <div class="turno-historico-card">
@@ -1106,7 +1565,8 @@ function carregarHistoricoTurnos() {
               ${t.dataHoraFechamento ? ` | Fim: ${new Date(t.dataHoraFechamento).toLocaleString("pt-BR")}` : ""}
             </div>
             <div style="margin-top:0.35rem; font-size:0.9rem;">
-              Vendas: <strong>${vendasTurno.length}</strong> |
+              Vendas: <strong>${vendasTurno.length}</strong>
+              ${canceladasTurno.length ? ` | <span style="color:#fb7185;">Canceladas: ${canceladasTurno.length}</span>` : ""} |
               Total do Turno: <strong class="mono" style="color:#34d399;">R$ ${totalTurno.toFixed(2)}</strong>
             </div>
           </div>
@@ -1123,7 +1583,7 @@ function carregarHistoricoTurnos() {
   }).join("");
 }
 
-// 12. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
+// 14. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
 function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   const v = cacheVendas.find(item => item.id === Number(vendaId));
   if (!v) return;
@@ -1133,9 +1593,10 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   area.innerHTML = `
     <div class="cupom-header">
       <h3>CAIXA PETROVIA</h3>
-      <div>COMPROVANTE DE VENDA #${v.id}</div>
+      <div>COMPROVANTE DE VENDA #${v.id} ${v.status === "CANCELADA" ? "(CANCELADA)" : ""}</div>
       <div>Operador: ${nomeOperador}</div>
       <div>Data: ${new Date(v.dataHora).toLocaleString("pt-BR")}</div>
+      <div>Pgto: ${formatarPagamentoTexto(v)}</div>
     </div>
 
     <table class="cupom-table">
@@ -1179,10 +1640,31 @@ function imprimirRelatorioTurno80mm(turnoId) {
   const vendas = cacheVendas
     .filter(v => v.turnoId === Number(turnoId) && v.status === "CONCLUIDA")
     .sort((a, b) => a.dataHora - b.dataHora);
+  const canceladas = cacheVendas.filter(v => v.turnoId === Number(turnoId) && v.status === "CANCELADA");
 
   const totalBruto = vendas.reduce((acc, v) => acc + v.valorBruto, 0);
   const totalDescontos = vendas.reduce((acc, v) => acc + v.desconto, 0);
   const totalLiquido = vendas.reduce((acc, v) => acc + v.valorFinal, 0);
+  const totalCancelado = canceladas.reduce((acc, v) => acc + v.valorFinal, 0);
+
+  // Agrupamento financeiro unificado (suportando pagamentos mistos e parciais no fechamento)
+  const resumoPagamentos = {};
+  vendas.forEach(v => {
+    if (v.pagamentos && v.pagamentos.length > 0) {
+      v.pagamentos.forEach(p => {
+        const chave = p.forma === "DINHEIRO" || p.forma === "PIX" ? p.forma : `${p.forma} - ${(p.bandeira || "OUTRA").toUpperCase()} ${p.forma === 'CREDITO' ? '(1x)' : ''}`;
+        resumoPagamentos[chave] = (resumoPagamentos[chave] || 0) + p.valor;
+      });
+    } else if (v.formaPagamento) {
+      const chave = formatarPagamentoTexto(v);
+      resumoPagamentos[chave] = (resumoPagamentos[chave] || 0) + v.valorFinal;
+    }
+  });
+
+  const linhasResumoPag = Object.entries(resumoPagamentos)
+    .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
+    .map(([label, valor]) => `<div>${label}: R$ ${valor.toFixed(2)}</div>`)
+    .join("");
 
   const area = document.getElementById("area-impressao");
   area.innerHTML = `
@@ -1199,7 +1681,7 @@ function imprimirRelatorioTurno80mm(turnoId) {
       <thead>
         <tr>
           <th>HORA / #ID</th>
-          <th>ITENS</th>
+          <th>ITENS / PGTO</th>
           <th class="cupom-right">TOTAL</th>
         </tr>
       </thead>
@@ -1207,7 +1689,10 @@ function imprimirRelatorioTurno80mm(turnoId) {
         ${vendas.map(v => `
           <tr>
             <td>${new Date(v.dataHora).toLocaleTimeString("pt-BR")} (#${v.id})</td>
-            <td>${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}</td>
+            <td>
+              ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}<br>
+              <small>[${formatarPagamentoTexto(v)}]</small>
+            </td>
             <td class="cupom-right">${v.valorFinal.toFixed(2)}</td>
           </tr>
         `).join("")}
@@ -1215,10 +1700,15 @@ function imprimirRelatorioTurno80mm(turnoId) {
     </table>
 
     <div class="cupom-divider"></div>
-    <div>Qtd. Vendas: ${vendas.length}</div>
+    <strong>RESUMO POR PAGAMENTO:</strong>
+    ${linhasResumoPag || "<div>Sem movimentação</div>"}
+
+    <div class="cupom-divider"></div>
+    <div>Qtd. Vendas Concluídas: ${vendas.length}</div>
     <div>Total Bruto: R$ ${totalBruto.toFixed(2)}</div>
     <div>Total Descontos: R$ ${totalDescontos.toFixed(2)}</div>
     <div class="cupom-total">TOTAL LÍQUIDO: R$ ${totalLiquido.toFixed(2)}</div>
+    ${canceladas.length ? `<div style="margin-top:4px; font-size:11px;">Auditoria - Canceladas: ${canceladas.length} (R$ ${totalCancelado.toFixed(2)})</div>` : ""}
 
     <div class="cupom-footer">
       Fechamento emitido em ${new Date().toLocaleString("pt-BR")}
@@ -1228,7 +1718,7 @@ function imprimirRelatorioTurno80mm(turnoId) {
   window.print();
 }
 
-// Expõe as funções para os eventos onclick do HTML
+// Expõe todas as funções para os eventos inline do HTML
 Object.assign(window, {
   autenticarOperador,
   bloquearCaixa,
@@ -1246,7 +1736,22 @@ Object.assign(window, {
   selecionarSubcategoriaPDV,
   carregarProdutos,
   desativarProduto,
-  processarEnterBuscaPDV,
+  aoDigitarBuscaPDV,
+  processarTeclasBuscaPDV,
+  abrirModalPagamento,
+  fecharModalPagamento,
+  voltarParaEscolhaForma,
+  selecionarFormaPagamento,
+  confirmarValorParcial,
+  selecionarBandeiraComValor,
+  removerPagamentoParcial,
+  finalizarVendaComposta,
+  confirmarImpressaoPosVenda,
+  carregarAbaVendas,
+  limparFiltrosVendas,
+  abrirModalCancelamento,
+  fecharModalCancelamento,
+  confirmarCancelamentoVenda,
   renderizarDashboard,
   limparFiltroDashboard,
   abrirTurno,
@@ -1255,8 +1760,6 @@ Object.assign(window, {
   alterarQtdItem,
   limparCarrinho,
   atualizarCarrinhoUI,
-  finalizarVenda,
-  confirmarImpressaoPosVenda,
   carregarHistoricoTurnos,
   imprimirCupomVenda80mm,
   imprimirRelatorioTurno80mm

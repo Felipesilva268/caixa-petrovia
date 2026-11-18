@@ -23,7 +23,7 @@
       <h2>Caixa Bloqueado</h2>
       <p class="modal-subtitle">Digite sua senha de acesso para assumir o terminal.</p>
       
-      <form onsubmit="autenticarOperador(event)">
+      <form onsubmit="event.preventDefault(); autenticarOperador(event);">
         <input 
           type="password" 
           id="input-senha-acesso" 
@@ -43,7 +43,82 @@
     </div>
   </div>
 
-  <!-- MODAL 2: CONFIRMAÇÃO DE IMPRESSÃO PÓS-VENDA -->
+  <!-- MODAL 2: PAGAMENTO MISTO / ÚNICO (F2) -->
+  <div id="modal-pagamento" class="modal-overlay no-print">
+    <div class="modal-card modal-pagamento-card">
+      <div class="alert-icon">
+        <i class="ri-bank-card-line"></i>
+      </div>
+      <h2>Composição de Pagamento</h2>
+      
+      <!-- Resumo de Valores -->
+      <div class="pagamento-resumo-box mono">
+        <div class="linha-resumo-pag"><span>Total da Venda:</span> <strong id="pag-val-total">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag"><span>Já Informado:</span> <strong id="pag-val-pago" style="color:#34d399;">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag total-restante"><span>Falta Restante:</span> <strong id="pag-val-restante" style="color:#fb7185;">R$ 0,00</strong></div>
+      </div>
+
+      <!-- Lista de Pagamentos já adicionados nesta venda mista -->
+      <div id="lista-pagamentos-parciais" class="pagamentos-parciais-lista"></div>
+
+      <!-- PASSO 1: ESCOLHER FORMA -->
+      <div id="pagamento-passo-1">
+        <p class="modal-subtitle" id="subtitulo-passo-pag">Adicione a forma de pagamento:</p>
+        <div class="pagamento-opcoes-grid">
+          <button type="button" class="btn-pag-opcao" onclick="selecionarFormaPagamento('DINHEIRO')">
+            <span class="tecla-badge mono">1</span>
+            <span><i class="ri-money-dollar-circle-line"></i> Dinheiro</span>
+          </button>
+          <button type="button" class="btn-pag-opcao" onclick="selecionarFormaPagamento('PIX')">
+            <span class="tecla-badge mono">2</span>
+            <span><i class="ri-qr-code-line"></i> PIX</span>
+          </button>
+          <button type="button" class="btn-pag-opcao" onclick="selecionarFormaPagamento('CREDITO')">
+            <span class="tecla-badge mono">3</span>
+            <span><i class="ri-bank-card-fill"></i> Crédito (1x)</span>
+          </button>
+          <button type="button" class="btn-pag-opcao" onclick="selecionarFormaPagamento('DEBITO')">
+            <span class="tecla-badge mono">4</span>
+            <span><i class="ri-bank-card-2-line"></i> Débito</span>
+          </button>
+        </div>
+        
+        <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+          <button type="button" onclick="fecharModalPagamento()" class="btn btn-secondary" style="flex:1;">
+            Cancelar [ESC]
+          </button>
+          <button type="button" id="btn-concluir-pagamento-misto" onclick="finalizarVendaComposta()" class="btn btn-success hidden" style="flex:1;">
+            <i class="ri-check-double-line"></i> Concluir Venda [F2]
+          </button>
+        </div>
+      </div>
+
+      <!-- PASSO 1.1: DIGITAR O VALOR PARCIAL (CASO HAJA RESTANTE) -->
+      <div id="pagamento-passo-valor" class="hidden">
+        <p class="modal-subtitle" id="label-valor-parcial">Digite o valor para esta forma:</p>
+        <input type="number" id="input-valor-parcial" class="mono input-pin" step="0.01" min="0.01" placeholder="0,00">
+        <div class="modal-actions-grid">
+          <button type="button" onclick="voltarParaEscolhaForma()" class="btn btn-secondary">
+            Voltar [ESC]
+          </button>
+          <button type="button" onclick="confirmarValorParcial()" class="btn btn-primary">
+            Avançar [Enter]
+          </button>
+        </div>
+      </div>
+
+      <!-- PASSO 2: BANDEIRA DO CARTÃO -->
+      <div id="pagamento-passo-2" class="hidden">
+        <p id="pagamento-titulo-bandeira" class="modal-subtitle">Selecione a bandeira:</p>
+        <div id="pagamento-lista-bandeiras" class="pagamento-opcoes-grid"></div>
+        <p class="modal-hint">
+          <strong>[Backspace]</strong> Voltar • <strong>[ESC]</strong> Cancelar
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: CONFIRMAÇÃO DE IMPRESSÃO PÓS-VENDA -->
   <div id="modal-pos-venda" class="modal-overlay no-print">
     <div class="modal-card">
       <div class="alert-icon success-icon">
@@ -61,6 +136,36 @@
           <i class="ri-printer-line"></i> Imprimir [Enter]
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- MODAL 4: CANCELAMENTO DE VENDA (AUDITORIA) -->
+  <div id="modal-cancelar-venda" class="modal-overlay no-print">
+    <div class="modal-card">
+      <div class="alert-icon danger-icon">
+        <i class="ri-error-warning-fill"></i>
+      </div>
+      <h2>Cancelar Venda</h2>
+      <p id="cancelar-venda-info" class="modal-subtitle">Confirme o motivo do cancelamento.</p>
+
+      <form onsubmit="event.preventDefault(); confirmarCancelamentoVenda(event);">
+        <input type="hidden" id="cancelar-venda-id" value="">
+        <input 
+          type="text" 
+          id="cancelar-venda-motivo" 
+          class="input-motivo" 
+          placeholder="Ex: Forma de pagamento errada, cliente desistiu..." 
+          required
+        >
+        <div class="modal-actions-grid" style="margin-top: 1rem;">
+          <button type="button" onclick="fecharModalCancelamento()" class="btn btn-secondary">
+            Voltar [ESC]
+          </button>
+          <button type="submit" class="btn btn-danger-solid">
+            <i class="ri-close-circle-line"></i> Confirmar
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -88,6 +193,9 @@
       <nav class="nav-tabs">
         <button id="tab-pdv" class="tab-btn active" onclick="navegar('pdv', this)">
           <i class="ri-shopping-bag-3-line"></i> PDV
+        </button>
+        <button id="tab-vendas" class="tab-btn" onclick="navegar('vendas', this)">
+          <i class="ri-receipt-line"></i> Vendas
         </button>
         <button id="tab-turnos" class="tab-btn" onclick="navegar('turnos', this)">
           <i class="ri-file-chart-line"></i> Turnos & Extrato
@@ -131,18 +239,21 @@
       </div>
 
       <div id="area-operacao-pdv" class="pdv-grid hidden">
-        <!-- Catálogo de Produtos com Categorias, Busca/Bipador e Ordenação -->
+        <!-- Catálogo de Produtos com Categorias, Busca/Bipador e Navegação por Setas -->
         <div class="catalogo-panel">
           <div class="panel-header">
-            <h2><i class="ri-layout-grid-line"></i> Catálogo</h2>
+            <div>
+              <h2><i class="ri-layout-grid-line"></i> Catálogo</h2>
+              <small class="esc-hint">Use Setas (⬆️⬇️⬅️➡️) + Enter para adicionar sem mouse</small>
+            </div>
             <div class="catalogo-controles">
               <input 
                 type="text" 
                 id="busca-produto-pdv" 
                 placeholder="Buscar ou Bipar... [F4]" 
-                oninput="carregarProdutos()" 
-                onkeydown="processarEnterBuscaPDV(event)"
-                title="Atalho: F4 (Aperte Enter para lançar direto)"
+                oninput="aoDigitarBuscaPDV()" 
+                onkeydown="processarTeclasBuscaPDV(event)"
+                title="Atalho: F4 (Setas navegam, Enter adiciona)"
               >
               <select id="ordenacao-pdv" onchange="carregarProdutos()" title="Ordenar produtos">
                 <option value="nome-asc">Ordem: A → Z</option>
@@ -164,7 +275,7 @@
         <div class="carrinho-panel">
           <div class="panel-header">
             <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
-            <small class="esc-hint">F2 conclui • F9 limpa • ESC bloqueia</small>
+            <small class="esc-hint">F2 paga • F4 busca • F9 limpa</small>
           </div>
           <div id="lista-carrinho" class="carrinho-itens"></div>
 
@@ -186,8 +297,8 @@
               <button onclick="limparCarrinho()" class="btn btn-danger" title="Atalho: F9">
                 <i class="ri-delete-bin-line"></i> Limpar [F9]
               </button>
-              <button onclick="finalizarVenda()" class="btn btn-success" title="Atalho: F2">
-                <i class="ri-check-double-line"></i> Concluir [F2]
+              <button onclick="abrirModalPagamento()" class="btn btn-success" title="Atalho: F2">
+                <i class="ri-check-double-line"></i> Pagar [F2]
               </button>
             </div>
           </div>
@@ -195,7 +306,40 @@
       </div>
     </section>
 
-    <!-- TELA 2: TURNOS, REIMPRESSÃO E EXTRATO -->
+    <!-- TELA 2: VENDAS REGISTRADAS E CANCELAMENTO -->
+    <section id="tela-vendas" class="screen">
+      <div class="card">
+        <div class="header-historico">
+          <div>
+            <h2><i class="ri-receipt-line"></i> Vendas Registradas</h2>
+            <p class="card-desc">Operadores podem cancelar apenas vendas do seu turno aberto. Admin pode cancelar qualquer venda.</p>
+          </div>
+          <div class="catalogo-controles">
+            <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data">
+            <select id="filtro-vendas-pagamento" onchange="carregarAbaVendas()">
+              <option value="TODOS">Pagamento: Todos</option>
+              <option value="DINHEIRO">Dinheiro</option>
+              <option value="PIX">PIX</option>
+              <option value="CREDITO">Crédito</option>
+              <option value="DEBITO">Débito</option>
+              <option value="MISTO">Misto (Múltiplas formas)</option>
+            </select>
+            <select id="filtro-vendas-status" onchange="carregarAbaVendas()">
+              <option value="TODAS">Status: Todas</option>
+              <option value="CONCLUIDA">Concluídas</option>
+              <option value="CANCELADA">Canceladas</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="limparFiltrosVendas()">
+              Limpar
+            </button>
+          </div>
+        </div>
+
+        <div id="lista-vendas-registradas" class="tabela-lista"></div>
+      </div>
+    </section>
+
+    <!-- TELA 3: TURNOS, REIMPRESSÃO E EXTRATO -->
     <section id="tela-turnos" class="screen">
       <div class="card" id="card-controle-turno">
         <h2><i class="ri-flashlight-line"></i> Meu Turno em Andamento</h2>
@@ -211,7 +355,7 @@
       </div>
     </section>
 
-    <!-- TELA 3: GESTÃO DE PRODUTOS -->
+    <!-- TELA 4: GESTÃO DE PRODUTOS -->
     <section id="tela-produtos" class="screen">
       <div class="card">
         <h2 id="titulo-form-produto"><i class="ri-add-circle-line"></i> Cadastrar Produto no Catálogo</h2>
@@ -273,13 +417,13 @@
       </div>
     </section>
 
-    <!-- TELA 4: DASHBOARD DE RELATÓRIOS DE PICO (RESTRITO AO ADMIN) -->
+    <!-- TELA 5: DASHBOARD DE RELATÓRIOS DE PICO (RESTRITO AO ADMIN) -->
     <section id="tela-dashboard" class="screen">
       <div class="card">
         <div class="panel-header">
           <div>
             <h2><i class="ri-bar-chart-box-line"></i> Inteligência de Vendas & Horários de Pico</h2>
-            <p class="card-desc">Análise em tempo real das vendas concluídas no posto.</p>
+            <p class="card-desc">Análise em tempo real das vendas concluídas no posto (vendas canceladas são excluídas).</p>
           </div>
           <div class="catalogo-controles">
             <input type="date" id="filtro-data-dashboard" onchange="renderizarDashboard()" title="Filtrar por data específica">
@@ -328,7 +472,7 @@
       </div>
     </section>
 
-    <!-- TELA 5: ADMINISTRAÇÃO DE OPERADORES E CREDENCIAIS (RESTRITO AO ADMIN) -->
+    <!-- TELA 6: ADMINISTRAÇÃO DE OPERADORES E CREDENCIAIS (RESTRITO AO ADMIN) -->
     <section id="tela-admin" class="screen">
       <div class="card">
         <h2><i class="ri-shield-user-line"></i> Meu Perfil de Administrador (Master)</h2>
