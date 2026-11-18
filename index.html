@@ -6,14 +6,12 @@
   <title>Caixa Petrovia — PDV</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="ambient-glow no-print"></div>
-
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
   <div id="modal-bloqueio" class="modal-overlay active no-print">
     <div class="modal-card">
@@ -54,8 +52,8 @@
       <!-- Resumo de Valores -->
       <div class="pagamento-resumo-box mono">
         <div class="linha-resumo-pag"><span>Total da Venda:</span> <strong id="pag-val-total">R$ 0,00</strong></div>
-        <div class="linha-resumo-pag"><span>Já Informado:</span> <strong id="pag-val-pago" style="color:#34d399;">R$ 0,00</strong></div>
-        <div class="linha-resumo-pag total-restante"><span>Falta Restante:</span> <strong id="pag-val-restante" style="color:#fb7185;">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag"><span>Já Informado:</span> <strong id="pag-val-pago" class="texto-pago">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag total-restante"><span>Falta Restante:</span> <strong id="pag-val-restante" class="texto-restante">R$ 0,00</strong></div>
       </div>
 
       <!-- Lista de Pagamentos já adicionados nesta venda mista -->
@@ -93,7 +91,7 @@
         </div>
       </div>
 
-      <!-- PASSO 1.1: DIGITAR O VALOR PARCIAL (CASO HAJA RESTANTE) -->
+      <!-- PASSO 1.1: DIGITAR O VALOR PARCIAL -->
       <div id="pagamento-passo-valor" class="hidden">
         <p class="modal-subtitle" id="label-valor-parcial">Digite o valor para esta forma:</p>
         <input type="number" id="input-valor-parcial" class="mono input-pin" step="0.01" min="0.01" placeholder="0,00">
@@ -157,6 +155,13 @@
           placeholder="Ex: Forma de pagamento errada, cliente desistiu..." 
           required
         >
+
+        <!-- Opção visível SOMENTE para Admin Master -->
+        <label id="box-admin-constar-fechamento" class="checkbox-auditoria hidden">
+          <input type="checkbox" id="cancelar-constar-fechamento">
+          <span>Constar no fechamento de caixa (extrato 80mm e auditoria)</span>
+        </label>
+
         <div class="modal-actions-grid" style="margin-top: 1rem;">
           <button type="button" onclick="fecharModalCancelamento()" class="btn btn-secondary">
             Voltar [ESC]
@@ -169,7 +174,7 @@
     </div>
   </div>
 
-  <!-- BARRA SUPERIOR -->
+  <!-- BARRA SUPERIOR (GRAFITE ESCURO SÓLIDO) -->
   <header class="top-bar no-print">
     <div class="brand">
       <div class="logo-icon">
@@ -211,7 +216,7 @@
         </button>
       </nav>
 
-      <button onclick="bloquearCaixa()" class="btn btn-danger btn-lock" title="Atalho: Tecla ESC">
+      <button onclick="bloquearCaixa()" class="btn btn-danger-solid btn-lock" title="Atalho: Tecla ESC">
         <i class="ri-lock-2-line"></i> Trocar [ESC]
       </button>
     </div>
@@ -239,7 +244,7 @@
       </div>
 
       <div id="area-operacao-pdv" class="pdv-grid hidden">
-        <!-- Catálogo de Produtos com Categorias, Busca/Bipador e Navegação por Setas -->
+        <!-- Catálogo de Produtos com Mais Vendidos, Categorias, Busca/Bipador e Setas -->
         <div class="catalogo-panel">
           <div class="panel-header">
             <div>
@@ -268,14 +273,18 @@
           <div id="barra-categorias-pdv" class="pills-bar"></div>
           <div id="barra-subcategorias-pdv" class="pills-bar sub-pills hidden"></div>
 
+          <!-- NOVA FAIXA: MAIS VENDIDOS (EXIBIDA NA VISÃO GERAL) -->
+          <div id="faixa-mais-vendidos" class="mais-vendidos-box hidden"></div>
+
+          <!-- Grade completa agrupada -->
           <div id="grade-produtos-pdv" class="produtos-grid"></div>
         </div>
 
         <!-- Cupom / Carrinho Atual -->
         <div class="carrinho-panel">
-          <div class="panel-header">
+          <div class="panel-header panel-header-dark">
             <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
-            <small class="esc-hint">F2 paga • F4 busca • F9 limpa</small>
+            <small class="esc-hint-dark">F2 paga • F4 busca • F9 limpa</small>
           </div>
           <div id="lista-carrinho" class="carrinho-itens"></div>
 
@@ -312,7 +321,7 @@
         <div class="header-historico">
           <div>
             <h2><i class="ri-receipt-line"></i> Vendas Registradas</h2>
-            <p class="card-desc">Operadores podem cancelar apenas vendas do seu turno aberto. Admin pode cancelar qualquer venda.</p>
+            <p class="card-desc">Operadores cancelam apenas no turno aberto (sempre consta no caixa). Admin cancela qualquer venda e escolhe se consta no fechamento.</p>
           </div>
           <div class="catalogo-controles">
             <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data">
