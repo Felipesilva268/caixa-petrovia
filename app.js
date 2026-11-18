@@ -47,7 +47,7 @@ let categoriaAtivaPDV = "TODAS";
 let subcategoriaAtivaPDV = "TODAS";
 
 const MAPA_CATEGORIAS = {
-  "Cervejas": ["Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
+  "Cervejas": ["Latinha","Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
   "Refrigerantes": ["Lata", "600ml", "1 Litro", "2 Litros", "Outros"],
   "Energéticos": ["Lata (250/269ml)", "Latão (473ml)", "Garrafa 2L", "Outros"],
   "Águas & Sucos": ["Sem Gás", "Com Gás", "Suco", "Água de Coco", "Gelo", "Outros"],
