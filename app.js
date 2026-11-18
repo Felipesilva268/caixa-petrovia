@@ -52,7 +52,7 @@ const MAPA_CATEGORIAS = {
   "Energéticos": ["Lata (250/269ml)", "Latão (473ml)", "Garrafa 2L", "Outros"],
   "Águas & Sucos": ["Sem Gás", "Com Gás", "Suco", "Água de Coco", "Gelo", "Outros"],
   "Automotivos": ["Óleo Lubrificante", "Aditivo", "Fluído de Freio", "Estética / Limpeza", "Outros"],
-  "Conveniência": ["Cigarros", "Salgados / Doces", "Carvão", "Diversos"]
+  "Cigarros": ["Carteira", "Unidade", "Carvão", "Diversos"]
 };
 
 function gerarProximoId(lista) {
