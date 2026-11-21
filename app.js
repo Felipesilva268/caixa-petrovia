@@ -967,7 +967,7 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
         <div>
           <span class="prod-cat-tag">${p.subcategoria}</span>
           <strong>${p.nome}</strong> ${p.codigoInterno ? `<small class="mono">[${p.codigoInterno}]</small>` : ""}
-          <div class="mono" style="color:var(--success); font-size:0.88rem; font-weight:800; margin-top:0.15rem;">
+          <div class="mono" style="color:var(--success-text); font-size:0.88rem; font-weight:800; margin-top:0.15rem;">
             R$ ${p.precoUnitario.toFixed(2)}
           </div>
         </div>
@@ -1193,7 +1193,7 @@ function finalizarVendaComposta() {
 
   document.getElementById("resumo-modal-venda").innerHTML = `
     <div>Total: R$ ${valorFinal.toFixed(2)}</div>
-    <div style="font-size:0.84rem; color:#d4d4d8; margin-top:0.25rem;">${formatarPagamentoTexto(venda)}</div>
+    <div style="font-size:0.84rem; color:#e0e7ff; margin-top:0.25rem;">${formatarPagamentoTexto(venda)}</div>
   `;
   document.getElementById("modal-pos-venda").classList.add("active");
   document.getElementById("btn-confirmar-impressao").focus();
@@ -1369,7 +1369,7 @@ function confirmarCancelamentoVenda(e) {
   fecharModalCancelamento();
 }
 
-// 10. DASHBOARD ANALÍTICO (ALTO CONTRASTE)
+// 10. DASHBOARD ANALÍTICO (PALETA SAAS ROXO & VERDE-ÁGUA)
 function limparFiltroDashboard() {
   const inputData = document.getElementById("filtro-data-dashboard");
   if (inputData) inputData.value = "";
@@ -1422,8 +1422,8 @@ function renderizarDashboard() {
 
   if (typeof Chart === "undefined") return;
 
-  Chart.defaults.color = "#18181b";
-  Chart.defaults.borderColor = "rgba(24, 24, 27, 0.14)";
+  Chart.defaults.color = "#475569";
+  Chart.defaults.borderColor = "#e2e8f0";
 
   const ctxPicos = document.getElementById("chart-picos")?.getContext("2d");
   if (ctxPicos) {
@@ -1435,10 +1435,11 @@ function renderizarDashboard() {
         datasets: [{
           label: "Vendas no Horário",
           data: vendasPorHora,
-          backgroundColor: "#3730a3",
-          borderColor: "#1e1b4b",
-          borderWidth: 1,
-          borderRadius: 4
+          backgroundColor: "#5b46f6",
+          hoverBackgroundColor: "#4338ca",
+          borderColor: "#4338ca",
+          borderWidth: 0,
+          borderRadius: 6
         }]
       },
       options: {
@@ -1460,10 +1461,11 @@ function renderizarDashboard() {
         datasets: [{
           label: "Unidades Vendidas",
           data: top10.length ? top10.map(item => item[1]) : [0],
-          backgroundColor: "#047857",
-          borderColor: "#064e3b",
-          borderWidth: 1,
-          borderRadius: 4
+          backgroundColor: "#059669",
+          hoverBackgroundColor: "#047857",
+          borderColor: "#047857",
+          borderWidth: 0,
+          borderRadius: 6
         }]
       },
       options: {
@@ -1671,7 +1673,7 @@ function carregarHistoricoTurnos() {
               ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}
             </div>
             <div style="display:flex; align-items:center; gap:0.6rem;">
-              <strong class="mono" style="color:var(--success); font-weight:800;">R$ ${v.valorFinal.toFixed(2)}</strong>
+              <strong class="mono" style="color:var(--success-text); font-weight:800;">R$ ${v.valorFinal.toFixed(2)}</strong>
               <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm(${v.id})">
                 <i class="ri-printer-line"></i> 2ª Via
               </button>
@@ -1694,7 +1696,7 @@ function carregarHistoricoTurnos() {
             <div style="margin-top:0.35rem; font-size:0.92rem; font-weight:700;">
               Vendas: <strong>${vendasTurno.length}</strong>
               ${canceladasVisiveis.length ? ` | <span style="color:var(--danger);">Canceladas: ${canceladasVisiveis.length}</span>` : ""} |
-              Total do Turno: <strong class="mono" style="color:var(--success);">R$ ${totalTurno.toFixed(2)}</strong>
+              Total do Turno: <strong class="mono" style="color:var(--success-text);">R$ ${totalTurno.toFixed(2)}</strong>
             </div>
           </div>
           <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
