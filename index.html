@@ -174,7 +174,7 @@
     </div>
   </div>
 
-  <!-- BARRA SUPERIOR (GRAFITE ESCURO SÓLIDO) -->
+  <!-- BARRA SUPERIOR (ROXO / ÍNDIGO SAAS) -->
   <header class="top-bar no-print">
     <div class="brand">
       <div class="logo-icon">
@@ -186,7 +186,7 @@
           <span id="badge-operador" class="badge badge-user">
             <i class="ri-user-3-line"></i> ---
           </span>
-          <span id="badge-nuvem" class="badge badge-open">
+          <span id="badge-nuvem" class="badge badge-cloud">
             <i class="ri-cloud-line"></i> Nuvem Ativa
           </span>
         </div>
@@ -216,7 +216,7 @@
         </button>
       </nav>
 
-      <button onclick="bloquearCaixa()" class="btn btn-danger-solid btn-lock" title="Atalho: Tecla ESC">
+      <button onclick="bloquearCaixa()" class="btn btn-lock" title="Atalho: Tecla ESC">
         <i class="ri-lock-2-line"></i> Trocar [ESC]
       </button>
     </div>
@@ -244,7 +244,7 @@
       </div>
 
       <div id="area-operacao-pdv" class="pdv-grid hidden">
-        <!-- Catálogo de Produtos com Mais Vendidos, Categorias, Busca/Bipador e Setas -->
+        <!-- Catálogo de Produtos (Somente texto e preço, sem fotos) -->
         <div class="catalogo-panel">
           <div class="panel-header">
             <div>
@@ -273,7 +273,7 @@
           <div id="barra-categorias-pdv" class="pills-bar"></div>
           <div id="barra-subcategorias-pdv" class="pills-bar sub-pills hidden"></div>
 
-          <!-- NOVA FAIXA: MAIS VENDIDOS (EXIBIDA NA VISÃO GERAL) -->
+          <!-- FAIXA: MAIS VENDIDOS (EXIBIDA NA VISÃO GERAL) -->
           <div id="faixa-mais-vendidos" class="mais-vendidos-box hidden"></div>
 
           <!-- Grade completa agrupada -->
@@ -282,31 +282,36 @@
 
         <!-- Cupom / Carrinho Atual -->
         <div class="carrinho-panel">
-          <div class="panel-header panel-header-dark">
-            <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
-            <small class="esc-hint-dark">F2 paga • F4 busca • F9 limpa</small>
+          <div class="panel-header panel-header-cart">
+            <div>
+              <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
+              <small class="esc-hint">F2 paga • F4 busca • F9 limpa</small>
+            </div>
           </div>
+
           <div id="lista-carrinho" class="carrinho-itens"></div>
 
           <div class="resumo-venda">
-            <div class="linha-resumo">
-              <span>Subtotal</span>
-              <strong id="valor-bruto" class="mono">R$ 0,00</strong>
-            </div>
-            <div class="linha-resumo">
-              <label for="input-desconto">Desconto (R$)</label>
-              <input type="number" id="input-desconto" class="mono" step="0.01" min="0" value="0" oninput="atualizarCarrinhoUI()">
-            </div>
-            <div class="linha-resumo total">
-              <span>Total a Pagar</span>
-              <strong id="valor-final" class="mono">R$ 0,00</strong>
+            <div class="total-destaque-box">
+              <div class="linha-resumo">
+                <span>Subtotal</span>
+                <strong id="valor-bruto" class="mono">R$ 0,00</strong>
+              </div>
+              <div class="linha-resumo">
+                <label for="input-desconto">Desconto (R$)</label>
+                <input type="number" id="input-desconto" class="mono" step="0.01" min="0" value="0" oninput="atualizarCarrinhoUI()">
+              </div>
+              <div class="linha-resumo total">
+                <span>Total a Pagar</span>
+                <strong id="valor-final" class="mono">R$ 0,00</strong>
+              </div>
             </div>
 
             <div class="acoes-venda">
-              <button onclick="limparCarrinho()" class="btn btn-danger" title="Atalho: F9">
+              <button onclick="limparCarrinho()" class="btn btn-outline-danger" title="Atalho: F9">
                 <i class="ri-delete-bin-line"></i> Limpar [F9]
               </button>
-              <button onclick="abrirModalPagamento()" class="btn btn-success" title="Atalho: F2">
+              <button onclick="abrirModalPagamento()" class="btn btn-primary" title="Atalho: F2">
                 <i class="ri-check-double-line"></i> Pagar [F2]
               </button>
             </div>
@@ -321,6 +326,7 @@
         <div class="header-historico">
           <div>
             <h2><i class="ri-receipt-line"></i> Vendas Registradas</h2>
+            <p class="card-desc">Operadores cancelam apenas no turno aberto (sempre consta no caixa). Admin cancela qualquer venda e escolhe se consta no fechamento.</p>
           </div>
           <div class="catalogo-controles">
             <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data">
@@ -442,19 +448,19 @@
         </div>
 
         <div class="kpi-grid">
-          <div class="kpi-card">
+          <div class="kpi-card kpi-purple">
             <span>Faturamento Total</span>
             <strong id="kpi-faturamento" class="mono">R$ 0,00</strong>
           </div>
-          <div class="kpi-card">
+          <div class="kpi-card kpi-teal">
             <span>Vendas Concluídas</span>
             <strong id="kpi-qtd-vendas" class="mono">0</strong>
           </div>
-          <div class="kpi-card">
+          <div class="kpi-card kpi-blue">
             <span>Itens Vendidos</span>
             <strong id="kpi-itens-vendidos" class="mono">0</strong>
           </div>
-          <div class="kpi-card">
+          <div class="kpi-card kpi-amber">
             <span>Horário de Maior Pico</span>
             <strong id="kpi-hora-pico" class="mono">---</strong>
           </div>
