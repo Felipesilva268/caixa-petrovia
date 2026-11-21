@@ -765,14 +765,13 @@ function ordenarListaProdutos(lista, criterio) {
   }
 }
 
-// NOVA FAIXA DE MAIS VENDIDOS NO TOPO DO PDV
+// FAIXA DE MAIS VENDIDOS NO TOPO DO PDV
 function renderizarFaixaMaisVendidos() {
   const container = document.getElementById("faixa-mais-vendidos");
   if (!container) return;
 
   const termoBusca = (document.getElementById("busca-produto-pdv")?.value || "").trim();
 
-  // Recolhe automaticamente ao filtrar categoria ou digitar na busca
   if (categoriaAtivaPDV !== "TODAS" || termoBusca !== "") {
     container.classList.add("hidden");
     container.innerHTML = "";
@@ -1161,7 +1160,6 @@ function finalizarVendaComposta() {
     return;
   }
 
-  // Captura os pagamentos ANTES de limpar o modal
   const pagamentosFinalizados = [...pagamentosParciaisVenda];
   const valorBruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
   const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
@@ -1217,7 +1215,6 @@ function confirmarImpressaoPosVenda(desejaImprimir) {
 function podeCancelarVenda(venda) {
   if (!usuarioLogado || venda.status === "CANCELADA") return false;
   if (usuarioLogado.isAdmin) return true;
-  // Operador cancela apenas vendas próprias dentro do turno aberto
   return Boolean(turnoAtivo && venda.turnoId === turnoAtivo.id && venda.usuarioId === usuarioLogado.id);
 }
 
@@ -1243,7 +1240,6 @@ function carregarAbaVendas() {
   let vendas = [...cacheVendas]
     .filter(v => {
       if (usuarioLogado.isAdmin) return true;
-      // Para operador: vê só as próprias vendas e NÃO vê cancelamentos ocultos feitos pelo Admin
       if (v.usuarioId !== usuarioLogado.id) return false;
       if (v.status === "CANCELADA" && v.constarNoFechamento === false) return false;
       return true;
@@ -1327,7 +1323,6 @@ function abrirModalCancelamento(vendaId) {
   document.getElementById("cancelar-venda-info").textContent =
     `Venda #${v.id} — R$ ${v.valorFinal.toFixed(2)} (${formatarPagamentoTexto(v)}). Informe o motivo do cancelamento:`;
 
-  // Mostra a opção de constar no fechamento SOMENTE para o Admin Master
   const boxAdmin = document.getElementById("box-admin-constar-fechamento");
   const checkConstar = document.getElementById("cancelar-constar-fechamento");
   if (usuarioLogado.isAdmin) {
@@ -1357,7 +1352,6 @@ function confirmarCancelamentoVenda(e) {
     return;
   }
 
-  // Frentista SEMPRE consta no fechamento; Admin decide pelo checkbox
   const constarNoFechamento = usuarioLogado.isAdmin
     ? Boolean(document.getElementById("cancelar-constar-fechamento").checked)
     : true;
@@ -1506,7 +1500,7 @@ function abrirTurno(tipoTurno) {
   });
 }
 
-function fecharTurnoAtual(imprimirFechamento = false) {
+function fecharTurnoAtual(modoImpressao = null) {
   if (!turnoAtivo) return;
   const turnoFechado = {
     ...turnoAtivo,
@@ -1518,8 +1512,8 @@ function fecharTurnoAtual(imprimirFechamento = false) {
   setDoc(doc(db, "turnos", String(turnoFechado.id)), turnoFechado);
   limparCarrinho();
 
-  if (imprimirFechamento) {
-    setTimeout(() => imprimirRelatorioTurno80mm(turnoFechado.id, turnoFechado), 150);
+  if (modoImpressao === "vendas" || modoImpressao === "produtos") {
+    setTimeout(() => imprimirRelatorioTurno80mm(turnoFechado.id, modoImpressao, turnoFechado), 150);
   }
 }
 
@@ -1542,14 +1536,20 @@ function atualizarStatusTurnoUI() {
         Turno: <strong style="color:var(--text-main);">${turnoAtivo.tipoTurno}</strong> |
         Abertura: ${new Date(turnoAtivo.dataHoraAbertura).toLocaleString("pt-BR")}
       </p>
-      <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-top:0.75rem;">
-        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm(${turnoAtivo.id})">
-          <i class="ri-printer-line"></i> Imprimir Parcial do Turno
+      <div style="display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:0.85rem;">
+        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm(${turnoAtivo.id}, 'vendas')">
+          <i class="ri-printer-line"></i> Parcial (Por Vendas)
         </button>
-        <button class="btn btn-danger-solid" onclick="fecharTurnoAtual(true)">
-          <i class="ri-lock-password-line"></i> Encerrar e Imprimir Fechamento
+        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm(${turnoAtivo.id}, 'produtos')">
+          <i class="ri-list-check-2"></i> Parcial (Por Produtos)
         </button>
-        <button class="btn btn-secondary" onclick="fecharTurnoAtual(false)">
+        <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('vendas')">
+          <i class="ri-lock-password-line"></i> Encerrar (Por Vendas)
+        </button>
+        <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('produtos')">
+          <i class="ri-lock-password-line"></i> Encerrar (Por Produtos)
+        </button>
+        <button class="btn btn-secondary" onclick="fecharTurnoAtual(null)">
           Encerrar sem Imprimir
         </button>
       </div>
@@ -1657,7 +1657,6 @@ function carregarHistoricoTurnos() {
     const vendasTurno = cacheVendas
       .filter(v => v.turnoId === t.id && v.status === "CONCLUIDA")
       .sort((a, b) => a.dataHora - b.dataHora);
-    // Apenas cancelamentos marcados para constar no fechamento aparecem no contador do turno
     const canceladasVisiveis = cacheVendas.filter(
       v => v.turnoId === t.id && v.status === "CANCELADA" && v.constarNoFechamento !== false
     );
@@ -1698,9 +1697,14 @@ function carregarHistoricoTurnos() {
               Total do Turno: <strong class="mono" style="color:var(--success);">R$ ${totalTurno.toFixed(2)}</strong>
             </div>
           </div>
-          <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm(${t.id})">
-            <i class="ri-printer-cloud-line"></i> Imprimir Turno Completo
-          </button>
+          <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm(${t.id}, 'vendas')">
+              <i class="ri-printer-cloud-line"></i> Por Vendas
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm(${t.id}, 'produtos')">
+              <i class="ri-list-check-2"></i> Por Produtos
+            </button>
+          </div>
         </div>
 
         <div class="vendas-sublista">
@@ -1763,7 +1767,7 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   if (callbackPosImpressao) callbackPosImpressao();
 }
 
-function imprimirRelatorioTurno80mm(turnoId, turnoOverride = null) {
+function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = null) {
   const t = turnoOverride || cacheTurnos.find(item => item.id === Number(turnoId));
   if (!t) return;
 
@@ -1771,7 +1775,6 @@ function imprimirRelatorioTurno80mm(turnoId, turnoOverride = null) {
   const vendas = cacheVendas
     .filter(v => v.turnoId === Number(turnoId) && v.status === "CONCLUIDA")
     .sort((a, b) => a.dataHora - b.dataHora);
-  // Respeita a escolha do Admin: só entram na auditoria do extrato 80mm as canceladas com constarNoFechamento !== false
   const canceladas = cacheVendas.filter(
     v => v.turnoId === Number(turnoId) && v.status === "CANCELADA" && v.constarNoFechamento !== false
   );
@@ -1781,7 +1784,7 @@ function imprimirRelatorioTurno80mm(turnoId, turnoOverride = null) {
   const totalLiquido = vendas.reduce((acc, v) => acc + v.valorFinal, 0);
   const totalCancelado = canceladas.reduce((acc, v) => acc + v.valorFinal, 0);
 
-  // Agrupamento financeiro unificado (suportando pagamentos mistos e parciais no fechamento)
+  // Agrupamento financeiro unificado (suportando pagamentos mistos e parciais)
   const resumoPagamentos = {};
   vendas.forEach(v => {
     if (v.pagamentos && v.pagamentos.length > 0) {
@@ -1802,38 +1805,94 @@ function imprimirRelatorioTurno80mm(turnoId, turnoOverride = null) {
     .map(([label, valor]) => `<div>${label}: R$ ${valor.toFixed(2)}</div>`)
     .join("");
 
+  // Corpo principal alterna entre "Por Produtos" e "Por Vendas"
+  let tituloRelatorio = `EXTRATO DE TURNO #${t.id}`;
+  let corpoTabelaHTML = "";
+
+  if (modo === "produtos") {
+    tituloRelatorio = `FECHAMENTO POR PRODUTO - #${t.id}`;
+    const mapaProdutos = {};
+    let totalUnidades = 0;
+
+    vendas.forEach(v => {
+      (v.itens || []).forEach(item => {
+        const nome = item.nomeSnapshot || "Produto";
+        const qtd = Number(item.quantidade) || 0;
+        const sub = Number(item.subtotal) || 0;
+
+        if (!mapaProdutos[nome]) {
+          mapaProdutos[nome] = { nome, quantidade: 0, total: 0 };
+        }
+        mapaProdutos[nome].quantidade += qtd;
+        mapaProdutos[nome].total += sub;
+        totalUnidades += qtd;
+      });
+    });
+
+    const listaAgrupada = Object.values(mapaProdutos)
+      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+
+    corpoTabelaHTML = `
+      <table class="cupom-table">
+        <thead>
+          <tr>
+            <th>PRODUTO</th>
+            <th class="cupom-right">QTD</th>
+            <th class="cupom-right">TOTAL</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${listaAgrupada.length ? listaAgrupada.map(p => `
+            <tr>
+              <td>${p.nome}</td>
+              <td class="cupom-right">${p.quantidade}x</td>
+              <td class="cupom-right">${p.total.toFixed(2)}</td>
+            </tr>
+          `).join("") : `<tr><td colspan="3">Nenhum produto vendido neste turno.</td></tr>`}
+        </tbody>
+      </table>
+
+      <div class="cupom-divider"></div>
+      <strong>TOTAL DE PRODUTOS VENDIDOS: ${totalUnidades} un.</strong>
+    `;
+  } else {
+    corpoTabelaHTML = `
+      <table class="cupom-table">
+        <thead>
+          <tr>
+            <th>HORA / #ID</th>
+            <th>ITENS / PGTO</th>
+            <th class="cupom-right">TOTAL</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${vendas.map(v => `
+            <tr>
+              <td>${new Date(v.dataHora).toLocaleTimeString("pt-BR")} (#${v.id})</td>
+              <td>
+                ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}<br>
+                <small>[${formatarPagamentoTexto(v)}]</small>
+              </td>
+              <td class="cupom-right">${v.valorFinal.toFixed(2)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
   const area = document.getElementById("area-impressao");
   area.innerHTML = `
     <div class="cupom-header">
       <h3>CAIXA PETROVIA</h3>
-      <div>EXTRATO DE TURNO #${t.id}</div>
+      <div>${tituloRelatorio}</div>
       <div>Turno: ${t.tipoTurno} (${t.status})</div>
       <div>Operador: ${nomeOperador}</div>
       <div>Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}</div>
       <div>Fim: ${t.dataHoraFechamento ? new Date(t.dataHoraFechamento).toLocaleString("pt-BR") : "Em andamento"}</div>
     </div>
 
-    <table class="cupom-table">
-      <thead>
-        <tr>
-          <th>HORA / #ID</th>
-          <th>ITENS / PGTO</th>
-          <th class="cupom-right">TOTAL</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${vendas.map(v => `
-          <tr>
-            <td>${new Date(v.dataHora).toLocaleTimeString("pt-BR")} (#${v.id})</td>
-            <td>
-              ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}<br>
-              <small>[${formatarPagamentoTexto(v)}]</small>
-            </td>
-            <td class="cupom-right">${v.valorFinal.toFixed(2)}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
+    ${corpoTabelaHTML}
 
     <div class="cupom-divider"></div>
     <strong>RESUMO POR PAGAMENTO:</strong>
