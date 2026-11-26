@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -293,14 +293,6 @@
 
           <div class="resumo-venda">
             <div class="total-destaque-box">
-              <div class="linha-resumo">
-                <span>Subtotal</span>
-                <strong id="valor-bruto" class="mono">R$ 0,00</strong>
-              </div>
-              <div class="linha-resumo">
-                <label for="input-desconto">Desconto (R$)</label>
-                <input type="number" id="input-desconto" class="mono" step="0.01" min="0" value="0" oninput="atualizarCarrinhoUI()">
-              </div>
               <div class="linha-resumo total">
                 <span>Total a Pagar</span>
                 <strong id="valor-final" class="mono">R$ 0,00</strong>
@@ -326,7 +318,7 @@
         <div class="header-historico">
           <div>
             <h2><i class="ri-receipt-line"></i> Vendas Registradas</h2>
-            <p class="card-desc">Operadores cancelam apenas no turno aberto (sempre consta no caixa). Admin cancela qualquer venda e escolhe se consta no fechamento.</p>
+            <p class="card-desc">Operadores cancelam apenas no turno aberto (sempre consta no caixa). Admin cancela qualquer venda e escolhe se consta no fechamento. Sem data selecionada, mostra os últimos 30 dias.</p>
           </div>
           <div class="catalogo-controles">
             <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data">
@@ -362,7 +354,10 @@
 
       <div class="card">
         <div class="header-historico">
-          <h2><i class="ri-history-line"></i> Histórico de Turnos e 2ª Via de Vendas</h2>
+          <div>
+            <h2><i class="ri-history-line"></i> Histórico de Turnos e 2ª Via de Vendas</h2>
+            <p class="card-desc">Sem data selecionada, mostra os turnos abertos e os dos últimos 30 dias.</p>
+          </div>
           <input type="date" id="filtro-data" onchange="carregarHistoricoTurnos()">
         </div>
         <div id="lista-historico-turnos" class="historico-lista"></div>
@@ -437,12 +432,12 @@
         <div class="panel-header">
           <div>
             <h2><i class="ri-bar-chart-box-line"></i> Inteligência de Vendas & Horários de Pico</h2>
-            <p class="card-desc">Análise em tempo real das vendas concluídas no posto (vendas canceladas são excluídas).</p>
+            <p class="card-desc">Análise em tempo real das vendas concluídas no posto (vendas canceladas são excluídas). Sem data selecionada, mostra os últimos 30 dias.</p>
           </div>
           <div class="catalogo-controles">
             <input type="date" id="filtro-data-dashboard" onchange="renderizarDashboard()" title="Filtrar por data específica">
             <button type="button" class="btn btn-secondary btn-sm" onclick="limparFiltroDashboard()">
-              Ver Tudo
+              Últimos 30 dias
             </button>
           </div>
         </div>
