@@ -60,6 +60,20 @@ let pagamentosParciaisVenda = [];
 let chartInstanciaPicos = null;
 let chartInstanciaProdutos = null;
 
+// Configuração do PDV (salva na nuvem em configuracoes/pdv) e estado da operação
+let configPDV = { bloquearAposVenda: true, bloqueioInatividadeMin: 0, favoritos: [] };
+let idadeConfirmadaNestaVenda = false;
+let ultimoProdutoAdicionado = null;
+let sessaoCarrinho = 0;
+let timerInatividade = null;
+let notasSugeridas = [];
+let pendentesEnvio = 0;
+let servidorRespondeu = false;
+let resolverDialogo = null;
+// Leitor de código de barras com o cursor fora da busca
+let bufferLeitor = "";
+let ultimaTeclaLeitor = 0;
+
 // MAPA OFICIAL DE CATEGORIAS E EMBALAGENS
 const MAPA_CATEGORIAS = {
   "Cervejas": ["Latinha", "Latão", "Big Latão", "Palito", "Sleek", "Long", "Litrinho", "Litrão", "Outros"],
@@ -146,6 +160,263 @@ function r2(valor) {
 // Compara IDs antigos (numéricos) e novos (texto) de forma segura
 function mesmoId(a, b) {
   return a !== null && a !== undefined && b !== null && b !== undefined && String(a) === String(b);
+}
+
+// Dinheiro no formato brasileiro: R$ 8,50
+const formatoBRL = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+function fmt(valor) {
+  return formatoBRL.format(r2(Number(valor) || 0));
+}
+
+// Só o número, para as colunas do cupom: 8,50
+function fmtNum(valor) {
+  return r2(Number(valor) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Busca sem acento e sem maiúsculas: "agua" encontra "Água"
+function semAcento(texto) {
+  return String(texto ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+// Cor de cada categoria (as cores ficam no style.css)
+const CLASSE_CATEGORIA = {
+  "Cervejas": "cat-cerveja",
+  "Refrigerantes": "cat-refri",
+  "Energéticos": "cat-energ",
+  "Águas & Sucos": "cat-agua",
+  "Automotivos": "cat-auto",
+  "Cigarros": "cat-cigarro"
+};
+
+const NOME_CURTO_CATEGORIA = {
+  "Cervejas": "Cerveja",
+  "Refrigerantes": "Refri",
+  "Energéticos": "Energético",
+  "Águas & Sucos": "Água/Suco",
+  "Automotivos": "Automotivo",
+  "Cigarros": "Cigarro"
+};
+
+// Categorias que pedem confirmação de maioridade na hora de pagar
+const CATEGORIAS_MAIORIDADE = ["Cervejas", "Cigarros"];
+
+const NOME_FORMA = { DINHEIRO: "dinheiro", PIX: "PIX", CREDITO: "crédito", DEBITO: "débito" };
+
+function categoriaDe(produto) {
+  const categoria = produto?.categoria;
+  return categoria === "Conveniência" ? "Cigarros" : (categoria || "Cigarros");
+}
+
+function classeCategoria(categoria) {
+  return CLASSE_CATEGORIA[categoria] || "cat-outra";
+}
+
+// Preferências deste computador (tema e som)
+function lerPreferencia(chave, padrao) {
+  try {
+    return localStorage.getItem(chave) ?? padrao;
+  } catch (e) {
+    return padrao;
+  }
+}
+
+function salvarPreferencia(chave, valor) {
+  try {
+    localStorage.setItem(chave, valor);
+  } catch (e) {
+    // navegador sem armazenamento local: a preferência vale só até recarregar
+  }
+}
+
+// Sons curtos: bipe de confirmação e som diferente para erro (Web Audio, sem arquivos)
+let somLigado = lerPreferencia("pdv-som", "1") === "1";
+let contextoAudio = null;
+
+function tocarSom(tipo) {
+  if (!somLigado) return;
+  try {
+    contextoAudio = contextoAudio || new (window.AudioContext || window.webkitAudioContext)();
+    if (contextoAudio.state === "suspended") contextoAudio.resume();
+    const erro = tipo === "erro";
+    const notas = erro
+      ? [{ freq: 220, ini: 0, dur: 0.14 }, { freq: 220, ini: 0.2, dur: 0.14 }]
+      : [{ freq: 1320, ini: 0, dur: 0.07 }];
+    notas.forEach(n => {
+      const osc = contextoAudio.createOscillator();
+      const ganho = contextoAudio.createGain();
+      osc.type = erro ? "square" : "sine";
+      osc.frequency.value = n.freq;
+      const t0 = contextoAudio.currentTime + n.ini;
+      ganho.gain.setValueAtTime(0.0001, t0);
+      ganho.gain.exponentialRampToValueAtTime(erro ? 0.12 : 0.2, t0 + 0.01);
+      ganho.gain.exponentialRampToValueAtTime(0.0001, t0 + n.dur);
+      osc.connect(ganho).connect(contextoAudio.destination);
+      osc.start(t0);
+      osc.stop(t0 + n.dur + 0.02);
+    });
+  } catch (e) {
+    // som indisponível neste navegador
+  }
+}
+
+function atualizarBotaoSom() {
+  const btn = document.getElementById("btn-som");
+  if (!btn) return;
+  btn.innerHTML = somLigado ? '<i class="ri-volume-up-line"></i>' : '<i class="ri-volume-mute-line"></i>';
+  btn.classList.toggle("desligado", !somLigado);
+  btn.title = somLigado ? "Som ligado" : "Som desligado";
+  btn.setAttribute("aria-label", somLigado ? "Desligar som" : "Ligar som");
+}
+
+function alternarSom() {
+  somLigado = !somLigado;
+  salvarPreferencia("pdv-som", somLigado ? "1" : "0");
+  atualizarBotaoSom();
+  if (somLigado) tocarSom("ok");
+}
+
+// Tema claro (padrão) ou escuro, salvo neste computador
+function temaAtual() {
+  return document.documentElement.dataset.tema === "escuro" ? "escuro" : "claro";
+}
+
+function aplicarTema(tema) {
+  if (tema === "escuro") document.documentElement.dataset.tema = "escuro";
+  else delete document.documentElement.dataset.tema;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", tema === "escuro" ? "#0e1116" : "#f4f5f8");
+  const btn = document.getElementById("btn-tema");
+  if (btn) {
+    const rotulo = tema === "escuro" ? "Usar tema claro" : "Usar tema escuro";
+    btn.innerHTML = tema === "escuro" ? '<i class="ri-sun-line"></i>' : '<i class="ri-moon-line"></i>';
+    btn.title = rotulo;
+    btn.setAttribute("aria-label", rotulo);
+  }
+  if (document.getElementById("tela-dashboard")?.classList.contains("active")) renderizarDashboard();
+}
+
+function alternarTema() {
+  const novo = temaAtual() === "escuro" ? "claro" : "escuro";
+  salvarPreferencia("pdv-tema", novo);
+  aplicarTema(novo);
+}
+
+// Avisos rápidos no rodapé (no lugar das janelas cinzas do navegador)
+function avisar(mensagem, opcoes = {}) {
+  const { tipo = "info", acao = null, duracao = acao ? 6000 : 3500 } = opcoes;
+  const pilha = document.getElementById("avisos");
+  if (!pilha) return () => {};
+  const icones = {
+    info: "ri-information-line",
+    sucesso: "ri-checkbox-circle-line",
+    alerta: "ri-alert-line",
+    erro: "ri-error-warning-line"
+  };
+  const el = document.createElement("div");
+  el.className = `aviso ${tipo}`;
+  el.setAttribute("role", tipo === "erro" ? "alert" : "status");
+  el.innerHTML = `<i class="${icones[tipo] || icones.info}"></i><span class="aviso-msg"></span>`;
+  el.querySelector(".aviso-msg").textContent = mensagem;
+
+  let fechado = false;
+  const fechar = () => {
+    if (fechado) return;
+    fechado = true;
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 220);
+  };
+
+  if (acao) {
+    const botao = document.createElement("button");
+    botao.type = "button";
+    botao.className = "aviso-acao";
+    botao.textContent = acao.rotulo;
+    botao.addEventListener("click", () => {
+      fechar();
+      acao.fn();
+    });
+    el.appendChild(botao);
+  }
+
+  const botaoFechar = document.createElement("button");
+  botaoFechar.type = "button";
+  botaoFechar.className = "aviso-fechar";
+  botaoFechar.setAttribute("aria-label", "Fechar aviso");
+  botaoFechar.textContent = "×";
+  botaoFechar.addEventListener("click", fechar);
+  el.appendChild(botaoFechar);
+
+  pilha.appendChild(el);
+  while (pilha.children.length > 3) pilha.firstElementChild.remove();
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(fechar, duracao);
+  return fechar;
+}
+
+// Confirmação no visual do caixa: Enter confirma, Esc volta
+function dialogoAberto() {
+  return Boolean(document.getElementById("dialogo")?.classList.contains("active"));
+}
+
+function confirmar({ titulo, mensagem, confirmarTexto = "Confirmar", cancelarTexto = "Voltar", tipo = "pergunta" } = {}) {
+  return new Promise(resolve => {
+    if (resolverDialogo) resolverDialogo(false);
+    const dialogo = document.getElementById("dialogo");
+    const icone = document.getElementById("dialogo-icone");
+    const btnOk = document.getElementById("dialogo-confirmar");
+    const btnVoltar = document.getElementById("dialogo-cancelar");
+    const estilos = {
+      pergunta: { classe: "", icone: "ri-question-line", botao: "btn-primary" },
+      perigo: { classe: "danger-icon", icone: "ri-error-warning-line", botao: "btn-danger-solid" },
+      alerta: { classe: "warning-icon", icone: "ri-alert-line", botao: "btn-primary" }
+    };
+    const estilo = estilos[tipo] || estilos.pergunta;
+    icone.className = `alert-icon ${estilo.classe}`;
+    icone.innerHTML = `<i class="${estilo.icone}"></i>`;
+    document.getElementById("dialogo-titulo").textContent = titulo || "Confirmar";
+    document.getElementById("dialogo-mensagem").textContent = mensagem || "";
+    btnOk.className = `btn ${estilo.botao}`;
+    btnOk.innerHTML = `${esc(confirmarTexto)} <kbd>Enter</kbd>`;
+    btnVoltar.innerHTML = `${esc(cancelarTexto)} <kbd>Esc</kbd>`;
+
+    const focoAnterior = document.activeElement;
+    resolverDialogo = (resposta) => {
+      resolverDialogo = null;
+      dialogo.classList.remove("active");
+      btnOk.onclick = null;
+      btnVoltar.onclick = null;
+      if (focoAnterior && typeof focoAnterior.focus === "function" && document.contains(focoAnterior)) {
+        focoAnterior.focus();
+      }
+      resolve(resposta);
+    };
+    btnOk.onclick = () => resolverDialogo?.(true);
+    btnVoltar.onclick = () => resolverDialogo?.(false);
+    dialogo.classList.add("active");
+    setTimeout(() => btnOk.focus(), 30);
+  });
+}
+
+// Lê a busca do PDV. "6*" no começo multiplica a quantidade: 6*7891234 lança 6 unidades
+function lerBusca() {
+  const bruto = document.getElementById("busca-produto-pdv")?.value || "";
+  const m = bruto.match(/^\s*(\d{1,3})\s*\*\s*(.*)$/);
+  const qtd = m ? Math.max(1, Math.min(999, parseInt(m[1], 10))) : 1;
+  const termo = (m ? m[2] : bruto).trim();
+  return { qtd, termo, termoNorm: semAcento(termo), temMultiplicador: Boolean(m) };
+}
+
+function limparBusca() {
+  const input = document.getElementById("busca-produto-pdv");
+  if (input) input.value = "";
+  indiceFocoPDV = -1;
+  carregarProdutos();
+}
+
+// Notas sugeridas a partir do valor que falta: próximo múltiplo de 5 e de 10 e as notas acima dele
+function sugerirNotas(valor) {
+  const acima = multiplo => Math.ceil((valor + 0.001) / multiplo) * multiplo;
+  const candidatos = [acima(5), acima(10), 10, 20, 50, 100, 200].filter(v => v > valor + 0.001);
+  return [...new Set(candidatos)].sort((a, b) => a - b).slice(0, 3);
 }
 
 // ID único gerado no próprio aparelho (funciona offline, sem colisão entre terminais)
@@ -254,7 +525,7 @@ function formatarPagamentoTexto(venda) {
     }
     return "MISTO (" + venda.pagamentos.map(p => {
       const rotulo = p.bandeira ? `${p.forma} ${p.bandeira}` : p.forma;
-      return `${rotulo}: R$ ${p.valor.toFixed(2)}`;
+      return `${rotulo}: ${fmt(p.valor)}`;
     }).join(" | ") + ")";
   }
   if (!venda.formaPagamento) return "Não informado";
@@ -274,6 +545,20 @@ function iniciarSincronizacaoFirebase() {
         usuarioLogado.nome = configMaster.nome;
         document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${esc(usuarioLogado.nome)}`;
         preencherCamposMaster();
+      }
+    }
+    const docPDV = snapshot.docs.find(d => d.id === "pdv");
+    if (docPDV) {
+      const dados = docPDV.data();
+      configPDV = {
+        bloquearAposVenda: dados.bloquearAposVenda !== false,
+        bloqueioInatividadeMin: Number(dados.bloqueioInatividadeMin) || 0,
+        favoritos: Array.isArray(dados.favoritos) ? dados.favoritos.map(Number).filter(n => !isNaN(n)) : []
+      };
+      preencherConfigPDV();
+      if (usuarioLogado) {
+        carregarProdutos();
+        reiniciarTimerInatividade();
       }
     }
     // Por último: a senha master já está atualizada quando o login pendente rodar
@@ -300,7 +585,10 @@ function iniciarSincronizacaoFirebase() {
 
   onSnapshot(collection(db, "produtos"), (snapshot) => {
     cacheProdutos = snapshot.docs.map(d => d.data());
-    if (usuarioLogado) carregarProdutos();
+    if (usuarioLogado) {
+      carregarProdutos();
+      atualizarCarrinhoUI();
+    }
   });
 
   onSnapshot(collection(db, "turnos"), (snapshot) => {
@@ -327,8 +615,15 @@ function iniciarSincronizacaoFirebase() {
 }
 
 inicializarSeletoresCategorias();
+aplicarTema(temaAtual());
+atualizarBotaoSom();
+atualizarCarrinhoUI();
 iniciarSincronizacaoFirebase();
+iniciarStatusNuvem();
 focarInputSenha();
+["pointerdown", "touchstart"].forEach(evento =>
+  window.addEventListener(evento, reiniciarTimerInatividade, { passive: true })
+);
 
 function inicializarSeletoresCategorias() {
   const selectCatForm = document.getElementById("prod-categoria");
@@ -341,7 +636,7 @@ function inicializarSeletoresCategorias() {
   }
 
   if (selectFiltroCadastro) {
-    selectFiltroCadastro.innerHTML = `<option value="TODAS">Todas as Categorias</option>` +
+    selectFiltroCadastro.innerHTML = `<option value="TODAS">Todas as categorias</option>` +
       categorias.map(c => `<option value="${c}">${c}</option>`).join("");
   }
 }
@@ -357,8 +652,25 @@ function atualizarSubcategoriasForm(subParaSelecionar = null) {
   }
 }
 
-// 3. MOTOR DE ATALHOS DE TECLADO (SETAS, MAIS VENDIDOS E PAGAMENTO MISTO)
+// 3. MOTOR DE ATALHOS DE TECLADO (SETAS, PAGAMENTO, TROCO E LEITOR DE CÓDIGO)
 window.addEventListener("keydown", (e) => {
+  reiniciarTimerInatividade();
+
+  // Confirmação do próprio sistema aberta: só Enter (confirma) e Esc (volta)
+  if (dialogoAberto()) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      resolverDialogo?.(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      resolverDialogo?.(false);
+    }
+    return;
+  }
+
+  // F5 recarrega a página no navegador: com alguém no caixa, isso descartaria a venda
+  if (e.key === "F5" && usuarioLogado) e.preventDefault();
+
   const modalBloqueio = document.getElementById("modal-bloqueio");
   const modalCancelar = document.getElementById("modal-cancelar-venda");
   const modalPosVenda = document.getElementById("modal-pos-venda");
@@ -401,6 +713,7 @@ window.addEventListener("keydown", (e) => {
       else if (e.key === "2") { e.preventDefault(); selecionarFormaPagamento("PIX"); }
       else if (e.key === "3") { e.preventDefault(); selecionarFormaPagamento("CREDITO"); }
       else if (e.key === "4") { e.preventDefault(); selecionarFormaPagamento("DEBITO"); }
+      else if (e.key === "F5") { e.preventDefault(); pagarRestanteEmDinheiro(); }
       else if (e.key === "F2") {
         e.preventDefault();
         const btnConcluir = document.getElementById("btn-concluir-pagamento-misto");
@@ -412,6 +725,13 @@ window.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
         confirmarValorParcial();
+      } else if (pagamentoFormaSelecionada === "DINHEIRO" && e.key === "F5") {
+        e.preventDefault();
+        confirmarValorParcial(calcularRestante());
+      } else if (pagamentoFormaSelecionada === "DINHEIRO" && ["F6", "F7", "F8"].includes(e.key)) {
+        e.preventDefault();
+        const nota = notasSugeridas[["F6", "F7", "F8"].indexOf(e.key)];
+        if (nota) confirmarValorParcial(nota);
       }
     } else if (pagamentoPassoAtual === 2) {
       if (e.key === "Backspace") {
@@ -431,8 +751,7 @@ window.addEventListener("keydown", (e) => {
 
   if (e.key === "Escape") {
     e.preventDefault();
-    if (carrinho.length && !confirm("Há itens na venda atual. Bloquear o caixa e descartar a venda?")) return;
-    bloquearCaixa();
+    pedirBloqueio();
     return;
   }
 
@@ -455,13 +774,41 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (e.key === "F5") {
+    e.preventDefault();
+    venderDinheiroExato();
+    return;
+  }
+
   if (e.key === "F9") {
     e.preventDefault();
-    limparCarrinho();
+    limparVendaAtual();
     return;
   }
 
   const elAtivo = document.activeElement;
+  const digitando = Boolean(elAtivo && ["INPUT", "TEXTAREA", "SELECT"].includes(elAtivo.tagName));
+
+  // Leitor de código de barras com o cursor fora da busca:
+  // as teclas chegam muito rápidas (menos de 80 ms entre elas) e terminam em Enter
+  if (!digitando) {
+    const agora = performance.now();
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      if (agora - ultimaTeclaLeitor > 80) bufferLeitor = "";
+      bufferLeitor += e.key;
+      ultimaTeclaLeitor = agora;
+      return;
+    }
+    if (e.key === "Enter" && bufferLeitor.length >= 4 && agora - ultimaTeclaLeitor < 150) {
+      e.preventDefault();
+      const codigo = bufferLeitor;
+      bufferLeitor = "";
+      lancarCodigoLido(codigo);
+      return;
+    }
+    bufferLeitor = "";
+  }
+
   if (elAtivo && elAtivo.tagName === "SELECT") return;
 
   if (["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(e.key)) {
@@ -534,7 +881,7 @@ function aoDigitarBuscaPDV() {
   indiceFocoPDV = -1;
   carregarProdutos();
   const cards = obterCardsPDV();
-  if (cards.length > 0 && document.getElementById("busca-produto-pdv").value.trim() !== "") {
+  if (cards.length > 0 && lerBusca().termo !== "") {
     indiceFocoPDV = 0;
     atualizarDestaqueCardPDV();
   }
@@ -544,17 +891,13 @@ function processarTeclasBuscaPDV(e) {
   if (e.key !== "Enter") return;
   e.preventDefault();
 
-  const input = document.getElementById("busca-produto-pdv");
-  const termo = (input.value || "").trim().toLowerCase();
+  const { qtd, termo, termoNorm } = lerBusca();
 
-  if (termo) {
-    const ativos = cacheProdutos.filter(p => p.ativo);
-    const porCodigo = ativos.find(p => p.codigoInterno && p.codigoInterno.toLowerCase() === termo);
+  if (termoNorm) {
+    const porCodigo = cacheProdutos.find(p => p.ativo && p.codigoInterno && semAcento(p.codigoInterno) === termoNorm);
     if (porCodigo) {
-      adicionarProdutoPorId(porCodigo.id);
-      input.value = "";
-      indiceFocoPDV = -1;
-      carregarProdutos();
+      adicionarProdutoPorId(porCodigo.id, qtd);
+      limparBusca();
       return;
     }
   }
@@ -564,9 +907,12 @@ function processarTeclasBuscaPDV(e) {
     cards[indiceFocoPDV].click();
   } else if (cards.length === 1) {
     cards[0].click();
-    input.value = "";
-    indiceFocoPDV = -1;
-    carregarProdutos();
+    limparBusca();
+  } else if (/^\d{4,}$/.test(termo)) {
+    // Parece código de barras e não existe no catálogo
+    tocarSom("erro");
+    avisar(`Código ${termo} não encontrado no catálogo.`, { tipo: "erro" });
+    document.getElementById("busca-produto-pdv")?.select();
   }
 }
 
@@ -649,9 +995,14 @@ function liberarTerminal() {
   carregarProdutos();
   carregarHistoricoTurnos();
   carregarAbaVendas();
+  reiniciarTimerInatividade();
+  if (usuarioLogado.isAdmin) preencherConfigPDV();
+  focarBuscaPDV();
 }
 
 function bloquearCaixa() {
+  clearTimeout(timerInatividade);
+  if (resolverDialogo) resolverDialogo(false);
   limparCarrinho();
   cancelarEdicaoOperador();
   cancelarEdicaoProduto();
@@ -663,6 +1014,7 @@ function bloquearCaixa() {
 
   document.getElementById("modal-pos-venda").classList.remove("active");
   document.getElementById("modal-bloqueio").classList.add("active");
+  atualizarBarraAtalhos();
   focarInputSenha();
 }
 
@@ -680,8 +1032,11 @@ function navegar(aba, btnElement) {
   if (aba === "dashboard" && usuarioLogado?.isAdmin) renderizarDashboard();
   if (aba === "admin" && usuarioLogado?.isAdmin) {
     preencherCamposMaster();
+    preencherConfigPDV();
     carregarOperadores();
   }
+  atualizarBarraAtalhos();
+  if (aba === "pdv") focarBuscaPDV();
 }
 
 // 6. GESTÃO DO ADMIN MASTER E EDIÇÃO DE OPERADORES
@@ -701,7 +1056,7 @@ function salvarConfigMaster(e) {
 
   const conflitoOperador = cacheUsuarios.some(u => u.senha === novaSenha && u.ativo !== false);
   if (conflitoOperador) {
-    alert("Esta senha já está sendo usada por um operador. Escolha outra senha Master.");
+    avisar("Esta senha já é usada por um operador. Escolha outra senha Master.", { tipo: "erro" });
     return;
   }
 
@@ -710,7 +1065,7 @@ function salvarConfigMaster(e) {
     senha: novaSenha
   });
 
-  alert("Perfil e Senha Master atualizados com sucesso!");
+  avisar("Perfil e senha Master atualizados.", { tipo: "sucesso" });
 }
 
 function prepararEdicaoOperador(id) {
@@ -721,8 +1076,8 @@ function prepararEdicaoOperador(id) {
   document.getElementById("op-nome").value = op.nome;
   document.getElementById("op-senha").value = op.senha;
 
-  document.getElementById("titulo-form-operador").innerHTML = `<i class="ri-edit-line"></i> Editando Operador #${op.id}`;
-  document.getElementById("btn-submit-operador").innerHTML = `<i class="ri-save-line"></i> Salvar Alterações`;
+  document.getElementById("titulo-form-operador").innerHTML = `<i class="ri-edit-line"></i> Editando operador #${op.id}`;
+  document.getElementById("btn-submit-operador").innerHTML = `<i class="ri-save-line"></i> Salvar alterações`;
   document.getElementById("btn-cancelar-edicao").classList.remove("hidden");
   document.getElementById("op-nome").focus();
 }
@@ -734,10 +1089,10 @@ function cancelarEdicaoOperador() {
   if (idInput) idInput.value = "";
 
   const titulo = document.getElementById("titulo-form-operador");
-  if (titulo) titulo.innerHTML = `<i class="ri-user-add-line"></i> Cadastrar Novo Operador`;
+  if (titulo) titulo.innerHTML = `<i class="ri-user-add-line"></i> Cadastrar novo operador`;
 
   const btnSubmit = document.getElementById("btn-submit-operador");
-  if (btnSubmit) btnSubmit.innerHTML = `<i class="ri-user-follow-line"></i> Cadastrar Operador`;
+  if (btnSubmit) btnSubmit.innerHTML = `<i class="ri-user-follow-line"></i> Cadastrar operador`;
 
   const btnCancelar = document.getElementById("btn-cancelar-edicao");
   if (btnCancelar) btnCancelar.classList.add("hidden");
@@ -750,14 +1105,14 @@ function salvarOperador(e) {
   const senha = document.getElementById("op-senha").value.trim();
 
   if (senha === configMaster.senha) {
-    alert("Essa senha é reservada ao Admin Master. Escolha outra.");
+    avisar("Essa senha é do Admin Master. Escolha outra.", { tipo: "erro" });
     return;
   }
 
   const idNum = idEdicao ? Number(idEdicao) : null;
   const jaExiste = cacheUsuarios.some(u => u.senha === senha && u.ativo !== false && u.id !== idNum);
   if (jaExiste) {
-    alert("Já existe outro operador usando esta senha. Escolha uma senha exclusiva.");
+    avisar("Outro operador já usa esta senha. Escolha uma senha exclusiva.", { tipo: "erro" });
     return;
   }
 
@@ -771,6 +1126,7 @@ function salvarOperador(e) {
       ativo: true
     });
     cancelarEdicaoOperador();
+    avisar(`Operador ${nome} atualizado.`, { tipo: "sucesso" });
   } else {
     const novoId = gerarProximoId(cacheUsuarios);
     setDoc(doc(db, "usuarios", String(novoId)), {
@@ -780,11 +1136,19 @@ function salvarOperador(e) {
       ativo: true
     });
     document.getElementById("form-operador").reset();
+    avisar(`Operador ${nome} cadastrado.`, { tipo: "sucesso" });
   }
 }
 
-function removerOperador(id) {
-  if (!confirm("Deseja remover o acesso deste operador? O histórico de turnos dele será mantido.")) return;
+async function removerOperador(id) {
+  const op = cacheUsuarios.find(u => u.id === Number(id));
+  const ok = await confirmar({
+    titulo: "Remover operador?",
+    mensagem: `${op ? op.nome : "Este operador"} perde o acesso ao caixa. Os turnos e as vendas continuam no histórico.`,
+    confirmarTexto: "Remover acesso",
+    tipo: "perigo"
+  });
+  if (!ok) return;
   deleteDoc(doc(db, "usuarios", String(id)));
   if (Number(document.getElementById("op-id-edicao").value) === Number(id)) {
     cancelarEdicaoOperador();
@@ -834,7 +1198,7 @@ function prepararEdicaoProduto(id) {
   document.getElementById("prod-preco").value = p.precoUnitario;
   document.getElementById("prod-codigo").value = p.codigoInterno || "";
 
-  document.getElementById("titulo-form-produto").innerHTML = `<i class="ri-edit-line"></i> Editando Produto #${p.id}`;
+  document.getElementById("titulo-form-produto").innerHTML = `<i class="ri-edit-line"></i> Editando produto #${p.id}`;
   document.getElementById("btn-submit-produto").innerHTML = `<i class="ri-save-line"></i> Atualizar`;
   document.getElementById("btn-cancelar-prod").classList.remove("hidden");
   document.getElementById("prod-nome").focus();
@@ -851,7 +1215,7 @@ function cancelarEdicaoProduto() {
   if (codInput) codInput.value = "";
 
   const titulo = document.getElementById("titulo-form-produto");
-  if (titulo) titulo.innerHTML = `<i class="ri-add-circle-line"></i> Cadastrar Produto no Catálogo`;
+  if (titulo) titulo.innerHTML = `<i class="ri-add-circle-line"></i> Cadastrar produto no catálogo`;
 
   const btnSubmit = document.getElementById("btn-submit-produto");
   if (btnSubmit) btnSubmit.innerHTML = `<i class="ri-save-line"></i> Salvar`;
@@ -904,12 +1268,8 @@ function renderizarFiltrosCategoriaPDV() {
 
   const categorias = ["TODAS", ...Object.keys(MAPA_CATEGORIAS)];
   barraCat.innerHTML = categorias.map(cat => `
-    <button 
-      type="button"
-      class="pill-btn ${categoriaAtivaPDV === cat ? 'active' : ''}" 
-      onclick="selecionarCategoriaPDV('${esc(cat)}')"
-    >
-      ${cat === "TODAS" ? "Catálogo Completo (Todos)" : esc(cat)}
+    <button type="button" class="pill-btn ${cat === "TODAS" ? "" : classeCategoria(cat)} ${categoriaAtivaPDV === cat ? "active" : ""}" onclick="selecionarCategoriaPDV('${esc(cat)}')" aria-pressed="${categoriaAtivaPDV === cat}">
+      ${cat === "TODAS" ? "Todos" : `<span class="ponto-cat"></span>${esc(cat)}`}
     </button>
   `).join("");
 
@@ -917,12 +1277,8 @@ function renderizarFiltrosCategoriaPDV() {
     const subs = ["TODAS", ...MAPA_CATEGORIAS[categoriaAtivaPDV]];
     barraSub.classList.remove("hidden");
     barraSub.innerHTML = subs.map(sub => `
-      <button 
-        type="button"
-        class="pill-btn ${subcategoriaAtivaPDV === sub ? 'active' : ''}" 
-        onclick="selecionarSubcategoriaPDV('${esc(sub)}')"
-      >
-        ${sub === "TODAS" ? "Todos os tamanhos" : esc(sub)}
+      <button type="button" class="pill-btn ${subcategoriaAtivaPDV === sub ? "active" : ""}" onclick="selecionarSubcategoriaPDV('${esc(sub)}')" aria-pressed="${subcategoriaAtivaPDV === sub}">
+        ${sub === "TODAS" ? "Todas as embalagens" : esc(sub)}
       </button>
     `).join("");
   } else {
@@ -945,68 +1301,81 @@ function ordenarListaProdutos(lista, criterio) {
   }
 }
 
-// FAIXA DE MAIS VENDIDOS NO TOPO DO PDV
+// Card de produto: faixa e rótulo na cor da categoria, nome e preço grandes
+function cardProdutoHTML(p, comCategoria = true) {
+  const categoria = categoriaDe(p);
+  const sub = p.subcategoria || "Diversos";
+  const rotulo = comCategoria ? `${NOME_CURTO_CATEGORIA[categoria] || categoria} · ${sub}` : sub;
+  return `
+    <div class="produto-card ${classeCategoria(categoria)}" onclick="adicionarProdutoPorId(${Number(p.id)})" title="${esc(categoria)} · ${esc(sub)}">
+      <span class="prod-cat-tag">${esc(rotulo)}</span>
+      <strong>${esc(p.nome)}</strong>
+      <span class="preco-tag">${fmt(p.precoUnitario)}</span>
+    </div>
+  `;
+}
+
+// FAIXA DO TOPO DO PDV: FAVORITOS (POSIÇÃO FIXA) OU, SEM FAVORITOS, OS MAIS VENDIDOS
 function renderizarFaixaMaisVendidos() {
   const container = document.getElementById("faixa-mais-vendidos");
   if (!container) return;
 
-  const termoBusca = (document.getElementById("busca-produto-pdv")?.value || "").trim();
-
-  if (categoriaAtivaPDV !== "TODAS" || termoBusca !== "") {
+  if (categoriaAtivaPDV !== "TODAS" || lerBusca().termo !== "") {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
   }
 
-  // Considera apenas a janela em tempo real (últimos JANELA_TEMPO_REAL_DIAS dias)
-  const contagemPorId = {};
-  cacheVendas
-    .filter(v => v.status === "CONCLUIDA")
-    .forEach(v => {
-      (v.itens || []).forEach(item => {
-        const pid = Number(item.produtoId);
-        if (!isNaN(pid)) {
-          contagemPorId[pid] = (contagemPorId[pid] || 0) + (Number(item.quantidade) || 1);
-        }
+  const ativosPorId = new Map(cacheProdutos.filter(p => p.ativo).map(p => [Number(p.id), p]));
+  const favoritos = (configPDV.favoritos || []).map(id => ativosPorId.get(Number(id))).filter(Boolean);
+
+  let lista;
+  let titulo;
+  let icone;
+  let selo;
+
+  if (favoritos.length) {
+    lista = favoritos;
+    titulo = "Favoritos";
+    icone = "ri-star-fill";
+    selo = `${favoritos.length}`;
+  } else {
+    // Considera apenas a janela em tempo real (últimos JANELA_TEMPO_REAL_DIAS dias)
+    const contagemPorId = {};
+    cacheVendas
+      .filter(v => v.status === "CONCLUIDA")
+      .forEach(v => {
+        (v.itens || []).forEach(item => {
+          const pid = Number(item.produtoId);
+          if (!isNaN(pid)) {
+            contagemPorId[pid] = (contagemPorId[pid] || 0) + (Number(item.quantidade) || 1);
+          }
+        });
       });
-    });
 
-  const topProdutos = cacheProdutos
-    .filter(p => p.ativo && contagemPorId[p.id] > 0)
-    .map(p => ({
-      ...p,
-      subcategoria: p.subcategoria || "Diversos",
-      qtdVendida: contagemPorId[p.id]
-    }))
-    .sort((a, b) => b.qtdVendida - a.qtdVendida)
-    .slice(0, 8);
+    lista = [...ativosPorId.values()]
+      .filter(p => contagemPorId[p.id] > 0)
+      .sort((a, b) => contagemPorId[b.id] - contagemPorId[a.id])
+      .slice(0, 8);
+    titulo = "Mais vendidos";
+    icone = "ri-fire-fill";
+    selo = `Top ${lista.length}`;
+  }
 
-  if (!topProdutos.length) {
+  if (!lista.length) {
     container.classList.add("hidden");
     container.innerHTML = "";
     return;
   }
-
-  const cardsHTML = topProdutos.map(p => {
-    return `
-      <div class="produto-card" onclick="adicionarProdutoPorId(${Number(p.id)})">
-        <div>
-          <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
-          <strong>${esc(p.nome)}</strong>
-        </div>
-        <span class="preco-tag">R$ ${p.precoUnitario.toFixed(2)}</span>
-      </div>
-    `;
-  }).join("");
 
   container.classList.remove("hidden");
   container.innerHTML = `
     <div class="mais-vendidos-header">
-      <h3><i class="ri-fire-fill"></i> Mais Vendidos (Acesso Rápido)</h3>
-      <span class="badge badge-user">Top ${topProdutos.length}</span>
+      <h3><i class="${icone}"></i> ${titulo}</h3>
+      <span class="badge badge-user">${selo}</span>
     </div>
     <div class="mais-vendidos-grid-wrap">
-      <div class="produtos-grid">${cardsHTML}</div>
+      <div class="produtos-grid">${lista.map(p => cardProdutoHTML(p)).join("")}</div>
     </div>
   `;
 
@@ -1017,7 +1386,7 @@ function carregarProdutos() {
   renderizarFiltrosCategoriaPDV();
   renderizarFaixaMaisVendidos();
 
-  const termoBusca = (document.getElementById("busca-produto-pdv")?.value || "").toLowerCase();
+  const { termoNorm } = lerBusca();
   const criterioOrdemPDV = document.getElementById("ordenacao-pdv")?.value || "nome-asc";
   const filtroCatCadastro = document.getElementById("filtro-cat-cadastro")?.value || "TODAS";
   const criterioOrdemCadastro = document.getElementById("ordenacao-cadastro")?.value || "nome-asc";
@@ -1026,18 +1395,18 @@ function carregarProdutos() {
     .filter(p => p.ativo)
     .map(p => ({
       ...p,
-      categoria: p.categoria === "Conveniência" ? "Cigarros" : (p.categoria || "Cigarros"),
+      categoria: categoriaDe(p),
       subcategoria: p.subcategoria || "Diversos"
     }));
 
   const filtradosPDV = todosAtivos.filter(p => {
     const bateCategoria = categoriaAtivaPDV === "TODAS" || p.categoria === categoriaAtivaPDV;
     const bateSubcategoria = subcategoriaAtivaPDV === "TODAS" || p.subcategoria === subcategoriaAtivaPDV;
-    const bateBusca =
-      p.nome.toLowerCase().includes(termoBusca) ||
-      p.categoria.toLowerCase().includes(termoBusca) ||
-      p.subcategoria.toLowerCase().includes(termoBusca) ||
-      (p.codigoInterno && p.codigoInterno.toLowerCase().includes(termoBusca));
+    const bateBusca = !termoNorm ||
+      semAcento(p.nome).includes(termoNorm) ||
+      semAcento(p.categoria).includes(termoNorm) ||
+      semAcento(p.subcategoria).includes(termoNorm) ||
+      (p.codigoInterno && semAcento(p.codigoInterno).includes(termoNorm));
     return bateCategoria && bateSubcategoria && bateBusca;
   });
 
@@ -1048,18 +1417,30 @@ function carregarProdutos() {
   );
 
   renderizarListaCadastro(filtradosCadastro, criterioOrdemCadastro);
+  renderizarFavoritosAdmin();
 }
 
 function desativarProduto(id) {
   const prod = cacheProdutos.find(p => p.id === Number(id));
   if (!prod) return;
   setDoc(doc(db, "produtos", String(prod.id)), { ...prod, ativo: false });
+  avisar(`${prod.nome} saiu do catálogo.`, {
+    acao: {
+      rotulo: "Desfazer",
+      fn: () => setDoc(doc(db, "produtos", String(prod.id)), { ...prod, ativo: true })
+    }
+  });
 }
 
 function renderizarGradePDV(produtos, criterioOrdem) {
   const container = document.getElementById("grade-produtos-pdv");
   if (!produtos.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); font-weight:600;">Nenhum produto cadastrado ou encontrado para este filtro.</p>`;
+    const { termo } = lerBusca();
+    container.innerHTML = `
+      <div class="carrinho-vazio">
+        <i class="ri-search-line"></i>
+        <span>${termo ? `Nada encontrado para "${esc(termo)}".` : "Nenhum produto cadastrado nesta categoria."}</span>
+      </div>`;
     indiceFocoPDV = -1;
     return;
   }
@@ -1085,31 +1466,20 @@ function renderizarGradePDV(produtos, criterioOrdem) {
       );
       if (!itensSub.length) return "";
 
-      const cardsHTML = itensSub.map(p => {
-        return `
-          <div class="produto-card" onclick="adicionarProdutoPorId(${Number(p.id)})">
-            <div>
-              <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
-              <strong>${esc(p.nome)}</strong>
-            </div>
-            <span class="preco-tag">R$ ${p.precoUnitario.toFixed(2)}</span>
-          </div>
-        `;
-      }).join("");
-
       return `
         <div class="subcategoria-bloco">
           <div class="subcategoria-titulo">${esc(sub)}</div>
-          <div class="produtos-grid">${cardsHTML}</div>
+          <div class="produtos-grid">${itensSub.map(p => cardProdutoHTML(p, false)).join("")}</div>
         </div>
       `;
     }).join("");
 
+    const n = produtosDaCategoria.length;
     return `
-      <div class="catalogo-secao">
+      <div class="catalogo-secao ${classeCategoria(categoria)}">
         <div class="catalogo-secao-header">
-          <h3><i class="ri-folder-open-line"></i> ${esc(categoria)}</h3>
-          <span class="badge badge-user">${produtosDaCategoria.length} ${produtosDaCategoria.length === 1 ? 'item' : 'itens'}</span>
+          <h3><span class="ponto-cat"></span> ${esc(categoria)}</h3>
+          <span class="badge badge-user">${n} ${n === 1 ? "item" : "itens"}</span>
         </div>
         <div class="catalogo-secao-body">
           ${blocosSubcategoriaHTML}
@@ -1125,10 +1495,11 @@ function renderizarGradePDV(produtos, criterioOrdem) {
 function renderizarListaCadastro(produtos, criterioOrdem) {
   const container = document.getElementById("lista-produtos-cadastro");
   if (!produtos.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem;">Nenhum produto cadastrado nesta categoria.</p>`;
+    container.innerHTML = `<p class="vazio-texto">Nenhum produto cadastrado nesta categoria.</p>`;
     return;
   }
 
+  const favoritos = new Set((configPDV.favoritos || []).map(Number));
   const ordemCategorias = [
     ...Object.keys(MAPA_CATEGORIAS),
     ...new Set(produtos.map(p => p.categoria).filter(c => !MAPA_CATEGORIAS[c]))
@@ -1141,28 +1512,35 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
     );
     if (!itensCat.length) return "";
 
-    const linhasHTML = itensCat.map(p => `
-      <div class="item-carrinho">
+    const linhasHTML = itensCat.map(p => {
+      const favorito = favoritos.has(Number(p.id));
+      const rotuloEstrela = favorito ? "Tirar dos favoritos" : "Adicionar aos favoritos";
+      return `
+      <div class="item-carrinho ${classeCategoria(categoria)}">
         <div>
           <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
-          <strong>${esc(p.nome)}</strong> ${p.codigoInterno ? `<small class="mono">[${esc(p.codigoInterno)}]</small>` : ""}
-          <div class="mono" style="color:var(--success-text); font-size:0.88rem; font-weight:800; margin-top:0.15rem;">
-            R$ ${p.precoUnitario.toFixed(2)}
+          <strong>${esc(p.nome)}</strong> ${p.codigoInterno ? `<small class="mono esc-hint">[${esc(p.codigoInterno)}]</small>` : ""}
+          <div class="mono" style="color:var(--price); font-size:0.95rem; font-weight:750; margin-top:0.15rem;">
+            ${fmt(p.precoUnitario)}
           </div>
         </div>
-        <div style="display:flex; gap:0.4rem;">
+        <div class="acoes-linha">
+          <button type="button" class="btn-estrela ${favorito ? "ativa" : ""}" onclick="alternarFavorito(${Number(p.id)})" title="${rotuloEstrela}" aria-label="${rotuloEstrela}" aria-pressed="${favorito}">
+            <i class="${favorito ? "ri-star-fill" : "ri-star-line"}"></i>
+          </button>
           <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoProduto(${Number(p.id)})">
             <i class="ri-edit-line"></i> Editar
           </button>
           <button class="btn btn-danger btn-sm" onclick="desativarProduto(${Number(p.id)})">Remover</button>
         </div>
       </div>
-    `).join("");
+    `;
+    }).join("");
 
     return `
-      <div class="catalogo-secao" style="margin-bottom: 1rem;">
+      <div class="catalogo-secao ${classeCategoria(categoria)}" style="margin-bottom: 1rem;">
         <div class="catalogo-secao-header">
-          <h3><i class="ri-price-tag-3-line"></i> ${esc(categoria)}</h3>
+          <h3><span class="ponto-cat"></span> ${esc(categoria)}</h3>
           <span class="badge badge-user">${itensCat.length}</span>
         </div>
         <div class="catalogo-secao-body">
@@ -1173,9 +1551,11 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
   }).join("");
 }
 
-// 8. MODAL DE PAGAMENTO MISTO / PARCIAL E FINALIZAÇÃO
-function abrirModalPagamento() {
+// 8. PAGAMENTO (ÚNICO OU DIVIDIDO), TROCO E FINALIZAÇÃO
+async function abrirModalPagamento() {
   if (!usuarioLogado || !turnoAtivo || !carrinho.length) return;
+  if (document.getElementById("modal-pagamento").classList.contains("active")) return;
+  if (!(await confirmarMaioridadeSeNecessario())) return;
 
   pagamentoPassoAtual = 1;
   pagamentoFormaSelecionada = null;
@@ -1184,6 +1564,31 @@ function abrirModalPagamento() {
 
   atualizarInterfaceModalPagamento();
   document.getElementById("modal-pagamento").classList.add("active");
+}
+
+// Cigarro e cerveja: pergunta uma vez por venda, na hora de pagar
+async function confirmarMaioridadeSeNecessario() {
+  if (idadeConfirmadaNestaVenda) return true;
+  const restritos = carrinho.filter(item => {
+    const produto = cacheProdutos.find(p => p.id === Number(item.produtoId));
+    return produto && CATEGORIAS_MAIORIDADE.includes(categoriaDe(produto));
+  });
+  if (!restritos.length) return true;
+
+  const nomes = restritos.slice(0, 3).map(i => i.nomeSnapshot).join(", ") + (restritos.length > 3 ? "…" : "");
+  const ok = await confirmar({
+    titulo: "Venda para maiores de 18",
+    mensagem: `${nomes}. O cliente tem 18 anos ou mais?`,
+    confirmarTexto: "Sim, continuar",
+    cancelarTexto: "Não",
+    tipo: "alerta"
+  });
+  if (ok) {
+    idadeConfirmadaNestaVenda = true;
+  } else {
+    avisar("Venda não liberada. Retire os itens para maiores de 18 para continuar.", { tipo: "alerta" });
+  }
+  return ok;
 }
 
 function fecharModalPagamento() {
@@ -1202,26 +1607,26 @@ function calcularValorPagoParcialmente() {
   return r2(pagamentosParciaisVenda.reduce((acc, p) => acc + p.valor, 0));
 }
 
+function calcularRestante() {
+  return r2(Math.max(0, calcularTotalVendaCarrinho() - calcularValorPagoParcialmente()));
+}
+
 function atualizarInterfaceModalPagamento() {
   const totalVenda = calcularTotalVendaCarrinho();
   const totalPago = calcularValorPagoParcialmente();
   const restante = r2(Math.max(0, totalVenda - totalPago));
 
-  document.getElementById("pag-val-total").textContent = `R$ ${totalVenda.toFixed(2)}`;
-  document.getElementById("pag-val-pago").textContent = `R$ ${totalPago.toFixed(2)}`;
-  document.getElementById("pag-val-restante").textContent = `R$ ${restante.toFixed(2)}`;
+  document.getElementById("pag-val-total").textContent = fmt(totalVenda);
+  document.getElementById("pag-val-pago").textContent = fmt(totalPago);
+  document.getElementById("pag-val-restante").textContent = fmt(restante);
 
   const listaEl = document.getElementById("lista-pagamentos-parciais");
-  if (!pagamentosParciaisVenda.length) {
-    listaEl.innerHTML = `<small style="color:var(--text-muted); font-weight:600;">Nenhum pagamento adicionado ainda.</small>`;
-  } else {
-    listaEl.innerHTML = pagamentosParciaisVenda.map((p, idx) => `
-      <div class="parcial-item-tag mono">
-        <span>${esc(p.forma)}${p.bandeira ? ` (${esc(p.bandeira)})` : ""}: R$ ${p.valor.toFixed(2)}</span>
-        <button type="button" class="btn btn-secondary btn-sm" style="padding:0.15rem 0.45rem;" onclick="removerPagamentoParcial(${idx})">✕</button>
-      </div>
-    `).join("");
-  }
+  listaEl.innerHTML = pagamentosParciaisVenda.map((p, idx) => `
+    <div class="parcial-item-tag mono">
+      <span>${esc(p.forma)}${p.bandeira ? ` (${esc(p.bandeira)})` : ""}: ${fmt(p.valor)}${p.troco > 0 ? ` · troco ${fmt(p.troco)}` : ""}</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="removerPagamentoParcial(${idx})" aria-label="Remover este pagamento">✕</button>
+    </div>
+  `).join("");
 
   const btnConcluir = document.getElementById("btn-concluir-pagamento-misto");
   const passo1El = document.getElementById("pagamento-passo-1");
@@ -1234,32 +1639,72 @@ function atualizarInterfaceModalPagamento() {
 
   if (pagamentoPassoAtual === 1) {
     passo1El.classList.remove("hidden");
-    if (restante <= 0.005) {
-      btnConcluir.classList.remove("hidden");
-    } else {
-      btnConcluir.classList.add("hidden");
-    }
+    document.getElementById("subtitulo-passo-pag").textContent = pagamentosParciaisVenda.length
+      ? `Falta ${fmt(restante)}. Escolha a próxima forma:`
+      : "Escolha a forma de pagamento (F5 = dinheiro exato):";
+    btnConcluir.classList.toggle("hidden", restante > 0.005);
   } else if (pagamentoPassoAtual === 1.1) {
     passoValorEl.classList.remove("hidden");
-    const labelEl = document.getElementById("label-valor-parcial");
-    if (labelEl) {
-      labelEl.textContent = `Valor para ${pagamentoFormaSelecionada} (aperte Enter para o restante total):`;
+    const emDinheiro = pagamentoFormaSelecionada === "DINHEIRO";
+    document.getElementById("label-valor-parcial").textContent = emDinheiro
+      ? "Quanto o cliente entregou? Toque numa nota ou digite o valor."
+      : `Valor no ${NOME_FORMA[pagamentoFormaSelecionada] || "pagamento"}. Enter confirma o valor que falta.`;
+
+    const notasEl = document.getElementById("notas-rapidas");
+    if (emDinheiro) {
+      notasSugeridas = sugerirNotas(restante);
+      notasEl.innerHTML = [
+        `<button type="button" class="nota-btn" onclick="confirmarValorParcial(${restante})"><small>Exato · Enter</small><b>${fmt(restante)}</b></button>`,
+        ...notasSugeridas.map((valor, i) =>
+          `<button type="button" class="nota-btn" onclick="confirmarValorParcial(${valor})"><small>F${6 + i}</small><b>${fmt(valor)}</b></button>`
+        )
+      ].join("");
+      notasEl.classList.remove("hidden");
+    } else {
+      notasSugeridas = [];
+      notasEl.innerHTML = "";
+      notasEl.classList.add("hidden");
     }
+
+    document.getElementById("erro-valor-parcial").classList.add("hidden");
     const inputVal = document.getElementById("input-valor-parcial");
     inputVal.value = restante.toFixed(2);
+    atualizarPreviaTroco();
     setTimeout(() => { inputVal.focus(); inputVal.select(); }, 50);
   } else if (pagamentoPassoAtual === 2) {
     passo2El.classList.remove("hidden");
   }
 }
 
+// Mostra o troco (ou quanto ainda falta) enquanto o valor recebido é digitado
+function atualizarPreviaTroco() {
+  const previa = document.getElementById("previa-troco");
+  if (!previa) return;
+  if (pagamentoPassoAtual !== 1.1 || pagamentoFormaSelecionada !== "DINHEIRO") {
+    previa.classList.add("hidden");
+    return;
+  }
+
+  document.getElementById("erro-valor-parcial").classList.add("hidden");
+  const restante = calcularRestante();
+  const valor = r2(parseFloat(document.getElementById("input-valor-parcial").value) || 0);
+  previa.classList.remove("troco", "falta");
+  if (valor <= 0) {
+    previa.classList.add("hidden");
+    return;
+  }
+  previa.classList.remove("hidden");
+  if (valor >= restante) {
+    previa.classList.add("troco");
+    previa.innerHTML = `<span>Troco</span><strong>${fmt(valor - restante)}</strong>`;
+  } else {
+    previa.classList.add("falta");
+    previa.innerHTML = `<span>Ainda falta (outra forma)</span><strong>${fmt(restante - valor)}</strong>`;
+  }
+}
+
 function selecionarFormaPagamento(forma) {
-  const totalVenda = calcularTotalVendaCarrinho();
-  const totalPago = calcularValorPagoParcialmente();
-  const restante = r2(Math.max(0, totalVenda - totalPago));
-
-  if (restante <= 0.005) return;
-
+  if (calcularRestante() <= 0.005) return;
   pagamentoFormaSelecionada = forma;
   pagamentoPassoAtual = 1.1;
   atualizarInterfaceModalPagamento();
@@ -1272,45 +1717,67 @@ function voltarParaEscolhaForma() {
   atualizarInterfaceModalPagamento();
 }
 
-function confirmarValorParcial() {
+// Em dinheiro, aceita valor maior que o total e registra o troco.
+// PIX e cartão não podem passar do que falta.
+function confirmarValorParcial(valorDireto = null) {
   const inputVal = document.getElementById("input-valor-parcial");
-  const valorDigitado = r2(parseFloat(inputVal.value) || 0);
-  const totalVenda = calcularTotalVendaCarrinho();
-  const totalPago = calcularValorPagoParcialmente();
-  const restante = r2(Math.max(0, totalVenda - totalPago));
+  const erroEl = document.getElementById("erro-valor-parcial");
+  const forma = pagamentoFormaSelecionada;
+  const valorDigitado = r2(valorDireto !== null ? Number(valorDireto) : (parseFloat(inputVal.value) || 0));
+  const restante = calcularRestante();
 
-  if (valorDigitado <= 0 || valorDigitado > restante + 0.005) {
-    alert(`Valor inválido. O restante a pagar é R$ ${restante.toFixed(2)}.`);
+  const mostrarErro = (mensagem) => {
+    erroEl.textContent = mensagem;
+    erroEl.classList.remove("hidden");
+    tocarSom("erro");
     inputVal.focus();
+    inputVal.select();
+  };
+
+  if (!forma) return;
+  if (valorDigitado <= 0) {
+    mostrarErro("Digite um valor maior que zero.");
     return;
   }
 
-  const forma = pagamentoFormaSelecionada;
-  if (forma === "DINHEIRO" || forma === "PIX") {
-    pagamentosParciaisVenda.push({
-      forma,
-      bandeira: null,
-      valor: valorDigitado
-    });
+  if (forma === "DINHEIRO") {
+    const aplicado = r2(Math.min(valorDigitado, restante));
+    const troco = r2(Math.max(0, valorDigitado - restante));
+    if (troco > 1000) {
+      mostrarErro(`O troco seria de ${fmt(troco)}. Confira o valor recebido.`);
+      return;
+    }
+    pagamentosParciaisVenda.push({ forma, bandeira: null, valor: aplicado, recebido: valorDigitado, troco });
     voltarParaEscolhaForma();
-  } else {
-    pagamentoValorParcialAtual = valorDigitado;
-    pagamentoPassoAtual = 2;
-    const bandeiras = BANDEIRAS_PAGAMENTO[forma] || [];
-    const titulo = forma === "CREDITO"
-      ? `Crédito (1x) [R$ ${valorDigitado.toFixed(2)}] — Escolha a bandeira:`
-      : `Débito [R$ ${valorDigitado.toFixed(2)}] — Escolha a bandeira:`;
-
-    document.getElementById("pagamento-titulo-bandeira").textContent = titulo;
-    document.getElementById("pagamento-lista-bandeiras").innerHTML = bandeiras.map((bandeira, idx) => `
-      <button type="button" class="btn-pag-opcao" onclick="selecionarBandeiraPagamento('${esc(bandeira)}')">
-        <span class="tecla-badge mono">${idx + 1}</span>
-        <span>${esc(bandeira)}</span>
-      </button>
-    `).join("");
-
-    atualizarInterfaceModalPagamento();
+    concluirSePago();
+    return;
   }
+
+  if (valorDigitado > restante + 0.005) {
+    mostrarErro(`No ${NOME_FORMA[forma]}, o valor não pode passar do que falta (${fmt(restante)}).`);
+    return;
+  }
+
+  if (forma === "PIX") {
+    pagamentosParciaisVenda.push({ forma, bandeira: null, valor: valorDigitado });
+    voltarParaEscolhaForma();
+    concluirSePago();
+    return;
+  }
+
+  pagamentoValorParcialAtual = valorDigitado;
+  pagamentoPassoAtual = 2;
+  const bandeiras = BANDEIRAS_PAGAMENTO[forma] || [];
+  document.getElementById("pagamento-titulo-bandeira").textContent = forma === "CREDITO"
+    ? `Crédito (1x) de ${fmt(valorDigitado)}: escolha a bandeira`
+    : `Débito de ${fmt(valorDigitado)}: escolha a bandeira`;
+  document.getElementById("pagamento-lista-bandeiras").innerHTML = bandeiras.map((bandeira, idx) => `
+    <button type="button" class="btn-pag-opcao" onclick="selecionarBandeiraPagamento('${esc(bandeira)}')">
+      <span class="tecla-badge mono">${idx + 1}</span>
+      <span>${esc(bandeira)}</span>
+    </button>
+  `).join("");
+  atualizarInterfaceModalPagamento();
 }
 
 function selecionarBandeiraPagamento(bandeira) {
@@ -1321,6 +1788,7 @@ function selecionarBandeiraPagamento(bandeira) {
     valor: pagamentoValorParcialAtual
   });
   voltarParaEscolhaForma();
+  concluirSePago();
 }
 
 function removerPagamentoParcial(index) {
@@ -1328,17 +1796,51 @@ function removerPagamentoParcial(index) {
   voltarParaEscolhaForma();
 }
 
+// Quando o valor informado cobre o total, a venda fecha sozinha (sem outro F2)
+function concluirSePago() {
+  if (pagamentosParciaisVenda.length && calcularRestante() <= 0.005) {
+    finalizarVendaComposta();
+  }
+}
+
+function pagarRestanteEmDinheiro() {
+  if (calcularRestante() <= 0.005) return;
+  pagamentoFormaSelecionada = "DINHEIRO";
+  confirmarValorParcial(calcularRestante());
+}
+
+// F5: fecha a venda em dinheiro, valor exato, sem abrir a tela de pagamento
+async function venderDinheiroExato() {
+  if (!usuarioLogado || !turnoAtivo || !carrinho.length) return;
+  if (document.getElementById("modal-pagamento").classList.contains("active")) return;
+  if (!(await confirmarMaioridadeSeNecessario())) return;
+  const total = calcularTotalVendaCarrinho();
+  pagamentosParciaisVenda = [{ forma: "DINHEIRO", bandeira: null, valor: total, recebido: total, troco: 0 }];
+  finalizarVendaComposta();
+}
+
 function finalizarVendaComposta() {
+  if (!usuarioLogado || !turnoAtivo || !carrinho.length) return;
+
   const totalVenda = calcularTotalVendaCarrinho();
   const totalPago = calcularValorPagoParcialmente();
-
   if (Math.abs(totalVenda - totalPago) > 0.01) {
-    alert("O total pago ainda não cobre o valor da venda!");
+    tocarSom("erro");
+    avisar("O valor informado ainda não cobre o total da venda.", { tipo: "erro" });
     return;
   }
 
-  const pagamentosFinalizados = pagamentosParciaisVenda.map(p => ({ ...p, valor: r2(p.valor) }));
-  const valorBruto = calcularTotalVendaCarrinho();
+  // O Firebase não aceita campos "undefined": cada pagamento é montado campo a campo
+  const pagamentosFinalizados = pagamentosParciaisVenda.map(p => {
+    const pagamento = { forma: p.forma, bandeira: p.bandeira ?? null, valor: r2(p.valor) };
+    if (p.forma === "DINHEIRO") {
+      pagamento.recebido = r2(p.recebido ?? p.valor);
+      pagamento.troco = r2(p.troco ?? 0);
+    }
+    return pagamento;
+  });
+  const trocoTotal = r2(pagamentosFinalizados.reduce((acc, p) => acc + (p.troco || 0), 0));
+  const valorBruto = totalVenda;
   const valorFinal = valorBruto;
   const itensVenda = carrinho.map(i => ({ ...i, subtotal: r2(i.subtotal) }));
 
@@ -1358,18 +1860,28 @@ function finalizarVendaComposta() {
     formaPagamento: pagamentosFinalizados.length === 1 ? pagamentosFinalizados[0].forma : "MISTO",
     bandeira: pagamentosFinalizados.length === 1 ? pagamentosFinalizados[0].bandeira : null,
     parcelas: 1,
+    troco: trocoTotal,
     status: "CONCLUIDA",
     itens: itensVenda
   };
 
-  setDoc(doc(db, "vendas", String(novoId)), venda);
+  setDoc(doc(db, "vendas", String(novoId)), venda)
+    .catch(erro => console.error("Erro ao salvar a venda:", erro));
 
   ultimaVendaId = novoId;
   ultimaVendaObjeto = venda;
 
+  const trocoBox = document.getElementById("troco-pos-venda");
+  if (trocoTotal > 0) {
+    document.getElementById("troco-pos-venda-valor").textContent = fmt(trocoTotal);
+    trocoBox.classList.remove("hidden");
+  } else {
+    trocoBox.classList.add("hidden");
+  }
+
   document.getElementById("resumo-modal-venda").innerHTML = `
-    <div>Venda #${esc(novoId)} — Total: R$ ${valorFinal.toFixed(2)}</div>
-    <div class="resumo-modal-pagamento">${esc(formatarPagamentoTexto(venda))}</div>
+    <div class="resumo-total"><span>Total</span><strong>${fmt(valorFinal)}</strong></div>
+    <div class="resumo-modal-pagamento">Venda #${esc(novoId)} · ${esc(formatarPagamentoTexto(venda))}</div>
   `;
   document.getElementById("modal-pos-venda").classList.add("active");
   document.getElementById("btn-confirmar-impressao").focus();
@@ -1378,13 +1890,23 @@ function finalizarVendaComposta() {
 function confirmarImpressaoPosVenda(desejaImprimir) {
   document.getElementById("modal-pos-venda").classList.remove("active");
 
+  // A configuração do admin decide se pede a senha de novo depois de cada venda
+  const depois = () => {
+    if (configPDV.bloquearAposVenda) bloquearCaixa();
+    else prepararProximaVenda();
+  };
+
   if (desejaImprimir && ultimaVendaId) {
-    imprimirCupomVenda80mm(ultimaVendaId, () => {
-      bloquearCaixa();
-    });
+    imprimirCupomVenda80mm(ultimaVendaId, depois);
   } else {
-    bloquearCaixa();
+    depois();
   }
+}
+
+function prepararProximaVenda() {
+  limparCarrinho();
+  limparBusca();
+  focarBuscaPDV();
 }
 
 // 9. ABA DE VENDAS E CANCELAMENTO COM AUDITORIA (ADMIN VS. OPERADOR)
@@ -1480,10 +2002,10 @@ function carregarAbaVendas() {
 
         <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
           <strong class="mono venda-valor-texto">
-            R$ ${v.valorFinal.toFixed(2)}
+            ${fmt(v.valorFinal)}
           </strong>
           <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
-            <i class="ri-printer-line"></i> 2ª Via
+            <i class="ri-printer-line"></i> 2ª via
           </button>
           ${permiteCancelar ? `
             <button class="btn btn-danger btn-sm" onclick="abrirModalCancelamento('${esc(v.id)}')">
@@ -1503,7 +2025,7 @@ function abrirModalCancelamento(vendaId) {
   document.getElementById("cancelar-venda-id").value = v.id;
   document.getElementById("cancelar-venda-motivo").value = "";
   document.getElementById("cancelar-venda-info").textContent =
-    `Venda #${v.id} — R$ ${v.valorFinal.toFixed(2)} (${formatarPagamentoTexto(v)}). Informe o motivo do cancelamento:`;
+    `Venda #${v.id} — ${fmt(v.valorFinal)} (${formatarPagamentoTexto(v)}). Informe o motivo do cancelamento:`;
 
   const boxAdmin = document.getElementById("box-admin-constar-fechamento");
   const checkConstar = document.getElementById("cancelar-constar-fechamento");
@@ -1559,7 +2081,7 @@ function confirmarCancelamentoVenda(e) {
   fecharModalCancelamento();
 }
 
-// 10. DASHBOARD ANALÍTICO (TEMA ESCURO)
+// 10. DASHBOARD ANALÍTICO
 function limparFiltroDashboard() {
   const inputData = document.getElementById("filtro-data-dashboard");
   if (inputData) inputData.value = "";
@@ -1605,7 +2127,7 @@ function renderizarDashboard() {
     ? `${String(indicePico).padStart(2, "0")}h (${maxVendasHora} ${maxVendasHora === 1 ? "venda" : "vendas"})`
     : "---";
 
-  document.getElementById("kpi-faturamento").textContent = `R$ ${faturamentoTotal.toFixed(2)}`;
+  document.getElementById("kpi-faturamento").textContent = `${fmt(faturamentoTotal)}`;
   document.getElementById("kpi-qtd-vendas").textContent = String(vendasConcluidas.length);
   document.getElementById("kpi-itens-vendidos").textContent = String(totalItensVendidos);
   document.getElementById("kpi-hora-pico").textContent = textoPico;
@@ -1616,8 +2138,11 @@ function renderizarDashboard() {
 
   if (typeof Chart === "undefined") return;
 
-  Chart.defaults.color = "#8b93a1";
-  Chart.defaults.borderColor = "rgba(255, 255, 255, 0.07)";
+  // Cores do gráfico seguem o tema (claro ou escuro)
+  const estiloTema = getComputedStyle(document.documentElement);
+  const corTema = nome => estiloTema.getPropertyValue(nome).trim();
+  Chart.defaults.color = corTema("--text-muted");
+  Chart.defaults.borderColor = corTema("--border");
   Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
 
   const ctxPicos = document.getElementById("chart-picos")?.getContext("2d");
@@ -1630,9 +2155,9 @@ function renderizarDashboard() {
         datasets: [{
           label: "Vendas no Horário",
           data: vendasPorHora,
-          backgroundColor: "#7c83ff",
-          hoverBackgroundColor: "#9197ff",
-          borderColor: "#7c83ff",
+          backgroundColor: corTema("--accent"),
+          hoverBackgroundColor: corTema("--accent-hover"),
+          borderColor: corTema("--accent"),
           borderWidth: 0,
           borderRadius: 6
         }]
@@ -1656,9 +2181,9 @@ function renderizarDashboard() {
         datasets: [{
           label: "Unidades Vendidas",
           data: top10.length ? top10.map(item => item[1]) : [0],
-          backgroundColor: "#34d399",
-          hoverBackgroundColor: "#6ee7b7",
-          borderColor: "#34d399",
+          backgroundColor: corTema("--success"),
+          hoverBackgroundColor: corTema("--success"),
+          borderColor: corTema("--success"),
           borderWidth: 0,
           borderRadius: 6
         }]
@@ -1693,7 +2218,7 @@ function abrirTurno(tipoTurno) {
 
   const turnoExistente = obterTurnoAbertoDoUsuario(usuarioLogado.id);
   if (turnoExistente) {
-    alert(`Você já possui um turno aberto (${turnoExistente.tipoTurno}). Encerre-o antes de abrir outro.`);
+    avisar(`Você já tem um turno aberto (${turnoExistente.tipoTurno}). Encerre esse turno antes de abrir outro.`, { tipo: "alerta" });
     turnoAtivo = turnoExistente;
     atualizarStatusTurnoUI();
     return;
@@ -1717,6 +2242,7 @@ function abrirTurno(tipoTurno) {
   turnoAtivo = novoTurno;
   if (!cacheTurnos.some(t => mesmoId(t.id, novoId))) cacheTurnos.push(novoTurno);
   atualizarStatusTurnoUI();
+  focarBuscaPDV();
 
   setDoc(doc(db, "turnos", String(novoId)), novoTurno)
     .catch(erro => console.error("Erro ao abrir turno:", erro))
@@ -1726,16 +2252,18 @@ function abrirTurno(tipoTurno) {
     });
 }
 
-function fecharTurnoAtual(modoImpressao = null) {
+async function fecharTurnoAtual(modoImpressao = null) {
   if (!turnoAtivo) return;
 
   const vendasDoTurno = cacheVendas.filter(v => mesmoId(v.turnoId, turnoAtivo.id) && v.status === "CONCLUIDA");
   const totalDoTurno = r2(vendasDoTurno.reduce((acc, v) => acc + v.valorFinal, 0));
-  const confirmou = confirm(
-    `Encerrar o turno ${turnoAtivo.tipoTurno}?\n\n` +
-    `${vendasDoTurno.length} ${vendasDoTurno.length === 1 ? "venda" : "vendas"} — Total R$ ${totalDoTurno.toFixed(2)}`
-  );
-  if (!confirmou) return;
+  const confirmou = await confirmar({
+    titulo: `Encerrar o turno ${turnoAtivo.tipoTurno}?`,
+    mensagem: `${vendasDoTurno.length} ${vendasDoTurno.length === 1 ? "venda" : "vendas"} · total ${fmt(totalDoTurno)}. Depois de encerrado, o turno não pode ser reaberto.`,
+    confirmarTexto: "Encerrar turno",
+    tipo: "perigo"
+  });
+  if (!confirmou || !turnoAtivo) return;
 
   const turnoFechado = {
     ...turnoAtivo,
@@ -1760,7 +2288,7 @@ function atualizarStatusTurnoUI() {
 
   if (turnoAtivo) {
     const nomeAtual = obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome);
-    badge.textContent = `Caixa Aberto: ${turnoAtivo.tipoTurno}`;
+    badge.textContent = `Caixa aberto · ${turnoAtivo.tipoTurno}`;
     badge.className = "badge badge-open";
     aviso.classList.add("hidden");
     pdvArea.classList.remove("hidden");
@@ -1773,70 +2301,138 @@ function atualizarStatusTurnoUI() {
       </p>
       <div style="display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:0.85rem;">
         <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'vendas')">
-          <i class="ri-printer-line"></i> Parcial (Por Vendas)
+          <i class="ri-printer-line"></i> Parcial por vendas
         </button>
         <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'produtos')">
-          <i class="ri-list-check-2"></i> Parcial (Por Produtos)
+          <i class="ri-list-check-2"></i> Parcial por produtos
         </button>
         <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('vendas')">
-          <i class="ri-lock-password-line"></i> Encerrar (Por Vendas)
+          <i class="ri-lock-password-line"></i> Encerrar e imprimir por vendas
         </button>
         <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('produtos')">
-          <i class="ri-lock-password-line"></i> Encerrar (Por Produtos)
+          <i class="ri-lock-password-line"></i> Encerrar e imprimir por produtos
         </button>
         <button class="btn btn-secondary" onclick="fecharTurnoAtual(null)">
-          Encerrar sem Imprimir
+          Encerrar sem imprimir
         </button>
       </div>
     `;
   } else {
-    badge.textContent = "Caixa Fechado";
+    badge.textContent = "Caixa fechado";
     badge.className = "badge badge-closed";
     aviso.classList.remove("hidden");
     pdvArea.classList.add("hidden");
     infoTurno.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem; font-weight:600;">Você não possui turno aberto no momento. Abra seu caixa na aba PDV.</p>`;
   }
+  atualizarBarraAtalhos();
 }
 
 // 12. CARRINHO
-// Adiciona pelo ID do produto (nome e preço vêm do catálogo, nunca do HTML)
-function adicionarProdutoPorId(produtoId) {
+// Adiciona pelo ID do produto (nome e preço vêm do catálogo, nunca do HTML).
+// Sem quantidade informada, usa o multiplicador da busca ("6*").
+function adicionarProdutoPorId(produtoId, qtd = null) {
   const p = cacheProdutos.find(item => item.id === Number(produtoId) && item.ativo);
   if (!p) return;
+  const busca = lerBusca();
+  const quantidade = qtd ?? busca.qtd;
   const sub = p.subcategoria || "Diversos";
-  adicionarAoCarrinho(p.id, `${p.nome} (${sub})`, p.precoUnitario);
+  adicionarAoCarrinho(p.id, `${p.nome} (${sub})`, p.precoUnitario, quantidade);
+  if (busca.temMultiplicador) limparBusca();
 }
 
-function adicionarAoCarrinho(produtoId, nomeSnapshot, precoUnitarioSnapshot) {
+// Código lido pelo leitor com o cursor fora da busca
+function lancarCodigoLido(codigo) {
+  const texto = String(codigo).trim();
+  const alvo = semAcento(texto);
+  const produto = cacheProdutos.find(p => p.ativo && p.codigoInterno && semAcento(p.codigoInterno) === alvo);
+  if (!produto) {
+    tocarSom("erro");
+    avisar(`Código ${texto} não encontrado no catálogo.`, { tipo: "erro" });
+    return false;
+  }
+  adicionarProdutoPorId(produto.id);
+  return true;
+}
+
+function adicionarAoCarrinho(produtoId, nomeSnapshot, precoUnitarioSnapshot, quantidade = 1) {
+  const qtd = Math.max(1, Math.round(Number(quantidade) || 1));
   const itemExistente = carrinho.find(i => i.produtoId === produtoId);
   if (itemExistente) {
-    itemExistente.quantidade += 1;
+    itemExistente.quantidade += qtd;
     itemExistente.subtotal = r2(itemExistente.quantidade * itemExistente.precoUnitarioSnapshot);
   } else {
     carrinho.push({
       produtoId,
       nomeSnapshot,
       precoUnitarioSnapshot,
-      quantidade: 1,
-      subtotal: precoUnitarioSnapshot
+      quantidade: qtd,
+      subtotal: r2(qtd * precoUnitarioSnapshot)
     });
   }
+  ultimoProdutoAdicionado = produtoId;
+  tocarSom("ok");
   atualizarCarrinhoUI();
 }
 
 function alterarQtdItem(index, delta) {
-  carrinho[index].quantidade += delta;
-  if (carrinho[index].quantidade <= 0) {
-    carrinho.splice(index, 1);
-  } else {
-    carrinho[index].subtotal = r2(carrinho[index].quantidade * carrinho[index].precoUnitarioSnapshot);
+  const item = carrinho[index];
+  if (!item) return;
+  const novaQuantidade = item.quantidade + delta;
+  if (novaQuantidade <= 0) {
+    removerItemCarrinho(index);
+    return;
   }
+  item.quantidade = novaQuantidade;
+  item.subtotal = r2(item.quantidade * item.precoUnitarioSnapshot);
+  if (delta > 0) ultimoProdutoAdicionado = item.produtoId;
   atualizarCarrinhoUI();
 }
 
+// Remover não pergunta nada: o aviso traz "Desfazer"
+function removerItemCarrinho(index) {
+  const [removido] = carrinho.splice(index, 1);
+  if (!removido) return;
+  const sessao = sessaoCarrinho;
+  atualizarCarrinhoUI();
+  avisar(`${removido.nomeSnapshot} saiu da venda.`, {
+    acao: {
+      rotulo: "Desfazer",
+      fn: () => {
+        if (sessao !== sessaoCarrinho) return;
+        carrinho.splice(Math.min(index, carrinho.length), 0, removido);
+        ultimoProdutoAdicionado = removido.produtoId;
+        atualizarCarrinhoUI();
+      }
+    }
+  });
+}
+
+// Esvazia o carrinho (uso interno: depois da venda, ao bloquear, ao entrar)
 function limparCarrinho() {
   carrinho = [];
+  idadeConfirmadaNestaVenda = false;
+  sessaoCarrinho += 1;
   atualizarCarrinhoUI();
+}
+
+// F9 / botão Limpar: esvazia a venda, com "Desfazer"
+function limparVendaAtual() {
+  if (!carrinho.length) return;
+  const copia = carrinho.map(i => ({ ...i }));
+  const idadeConfirmada = idadeConfirmadaNestaVenda;
+  limparCarrinho();
+  const sessao = sessaoCarrinho;
+  avisar(`Venda limpa (${copia.length} ${copia.length === 1 ? "item" : "itens"}).`, {
+    acao: {
+      rotulo: "Desfazer",
+      fn: () => {
+        if (sessao !== sessaoCarrinho || carrinho.length) return;
+        carrinho = copia;
+        idadeConfirmadaNestaVenda = idadeConfirmada;
+        atualizarCarrinhoUI();
+      }
+    }
+  });
 }
 
 function atualizarCarrinhoUI() {
@@ -1844,27 +2440,241 @@ function atualizarCarrinhoUI() {
   if (!container) return;
 
   if (!carrinho.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); font-weight:600;">Nenhum item selecionado.</p>`;
+    container.innerHTML = `
+      <div class="carrinho-vazio">
+        <i class="ri-shopping-cart-2-line"></i>
+        <span>Nenhum item na venda.</span>
+        <small class="esc-hint">Escolha um produto ou passe o código de barras.</small>
+      </div>`;
   } else {
-    container.innerHTML = carrinho.map((item, idx) => `
-      <div class="item-carrinho">
-        <div>
-          <strong>${esc(item.nomeSnapshot)}</strong>
-          <div class="mono" style="font-size:0.84rem; font-weight:700; color:var(--text-muted);">
-            ${item.quantidade}x R$ ${item.precoUnitarioSnapshot.toFixed(2)} = R$ ${item.subtotal.toFixed(2)}
-          </div>
+    container.innerHTML = carrinho.map((item, idx) => {
+      const produto = cacheProdutos.find(p => p.id === Number(item.produtoId));
+      const classeCat = produto ? classeCategoria(categoriaDe(produto)) : "cat-outra";
+      const novo = mesmoId(item.produtoId, ultimoProdutoAdicionado) ? " novo" : "";
+      return `
+      <div class="linha-carrinho ${classeCat}${novo}">
+        <strong class="linha-carrinho-nome">${esc(item.nomeSnapshot)}</strong>
+        <strong class="linha-carrinho-subtotal mono">${fmt(item.subtotal)}</strong>
+        <span class="linha-carrinho-unit mono">${item.quantidade} × ${fmt(item.precoUnitarioSnapshot)}</span>
+        <div class="qty-controles">
+          <button type="button" class="qty-btn" onclick="alterarQtdItem(${idx}, -1)" aria-label="Diminuir quantidade">−</button>
+          <span class="qty-num mono">${item.quantidade}</span>
+          <button type="button" class="qty-btn" onclick="alterarQtdItem(${idx}, 1)" aria-label="Aumentar quantidade">+</button>
+          <button type="button" class="qty-btn qty-remover" onclick="removerItemCarrinho(${idx})" aria-label="Remover item"><i class="ri-close-line"></i></button>
         </div>
-        <div style="display:flex; gap:0.35rem;">
-          <button class="btn btn-secondary btn-sm" onclick="alterarQtdItem(${idx}, -1)">-</button>
-          <button class="btn btn-secondary btn-sm" onclick="alterarQtdItem(${idx}, 1)">+</button>
-          <button class="btn btn-danger btn-sm" onclick="alterarQtdItem(${idx}, -999)">✕</button>
-        </div>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
+    container.querySelector(".linha-carrinho.novo")?.scrollIntoView({ block: "nearest" });
+  }
+  ultimoProdutoAdicionado = null;
+
+  const totalEl = document.getElementById("valor-final");
+  const textoTotal = fmt(calcularTotalVendaCarrinho());
+  if (totalEl && totalEl.textContent !== textoTotal) {
+    totalEl.textContent = textoTotal;
+    totalEl.classList.remove("pulso");
+    if (carrinho.length) {
+      void totalEl.offsetWidth;
+      totalEl.classList.add("pulso");
+    }
   }
 
-  const total = calcularTotalVendaCarrinho();
-  document.getElementById("valor-final").textContent = `R$ ${total.toFixed(2)}`;
+  const qtdItens = carrinho.reduce((acc, i) => acc + i.quantidade, 0);
+  const textoItens = `${qtdItens} ${qtdItens === 1 ? "item" : "itens"}`;
+  const contagem = document.getElementById("contagem-itens");
+  if (contagem) contagem.textContent = textoItens;
+  const mobileTotal = document.getElementById("mobile-total");
+  if (mobileTotal) mobileTotal.textContent = textoTotal;
+  const mobileItens = document.getElementById("mobile-itens");
+  if (mobileItens) mobileItens.textContent = `Venda atual · ${textoItens}`;
+}
+
+// Celular: o botão da barra de baixo leva até a lista da venda
+function irParaVenda() {
+  document.querySelector(".carrinho-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// 12b. BLOQUEIO, ATALHOS, FAVORITOS, CONFIGURAÇÃO E STATUS DA NUVEM
+// Esc / "Trocar operador": com itens na venda, pergunta antes de descartar
+async function pedirBloqueio() {
+  if (carrinho.length) {
+    const ok = await confirmar({
+      titulo: "Trocar de operador?",
+      mensagem: `A venda atual tem ${carrinho.length} ${carrinho.length === 1 ? "item" : "itens"} (${fmt(calcularTotalVendaCarrinho())}) e será descartada.`,
+      confirmarTexto: "Descartar e bloquear",
+      cancelarTexto: "Voltar",
+      tipo: "perigo"
+    });
+    if (!ok) return;
+  }
+  bloquearCaixa();
+}
+
+function reiniciarTimerInatividade() {
+  clearTimeout(timerInatividade);
+  const minutos = Number(configPDV.bloqueioInatividadeMin) || 0;
+  if (!usuarioLogado || minutos <= 0) return;
+  timerInatividade = setTimeout(bloquearPorInatividade, minutos * 60 * 1000);
+}
+
+// Só bloqueia sozinho com a venda vazia e nenhuma tela aberta por cima
+function bloquearPorInatividade() {
+  if (!usuarioLogado) return;
+  const algumaJanelaAberta = document.querySelector(".modal-overlay.active:not(#modal-bloqueio)");
+  if (carrinho.length || algumaJanelaAberta) {
+    reiniciarTimerInatividade();
+    return;
+  }
+  bloquearCaixa();
+  avisar("Caixa bloqueado por inatividade.", { tipo: "info" });
+}
+
+function atualizarBarraAtalhos() {
+  const visivel = Boolean(usuarioLogado && turnoAtivo && document.getElementById("tela-pdv")?.classList.contains("active"));
+  document.getElementById("barra-atalhos")?.classList.toggle("hidden", !visivel);
+  document.getElementById("barra-venda-mobile")?.classList.toggle("hidden", !visivel);
+  document.body.classList.toggle("com-atalhos", visivel);
+}
+
+// No computador, deixa o cursor na busca para o leitor e a digitação
+function focarBuscaPDV() {
+  if (!turnoAtivo || !window.matchMedia("(min-width: 1024px)").matches) return;
+  setTimeout(() => {
+    if (document.querySelector(".modal-overlay.active")) return;
+    document.getElementById("busca-produto-pdv")?.focus();
+  }, 60);
+}
+
+function preencherConfigPDV() {
+  const chk = document.getElementById("cfg-bloquear-apos-venda");
+  const sel = document.getElementById("cfg-bloqueio-inatividade");
+  if (chk) chk.checked = configPDV.bloquearAposVenda !== false;
+  if (sel) sel.value = String(configPDV.bloqueioInatividadeMin || 0);
+}
+
+function salvarConfigPDV(e) {
+  e.preventDefault();
+  const bloquearAposVenda = document.getElementById("cfg-bloquear-apos-venda").checked;
+  const bloqueioInatividadeMin = Number(document.getElementById("cfg-bloqueio-inatividade").value) || 0;
+  configPDV = { ...configPDV, bloquearAposVenda, bloqueioInatividadeMin };
+  reiniciarTimerInatividade();
+  setDoc(doc(db, "configuracoes", "pdv"), { bloquearAposVenda, bloqueioInatividadeMin }, { merge: true })
+    .catch(erro => {
+      console.error("Erro ao salvar a configuração:", erro);
+      avisar("Não foi possível salvar a configuração na nuvem.", { tipo: "erro" });
+    });
+  avisar("Configuração do bloqueio salva.", { tipo: "sucesso" });
+}
+
+function alternarFavorito(id) {
+  const lista = (configPDV.favoritos || []).map(Number);
+  const idNum = Number(id);
+  const pos = lista.indexOf(idNum);
+  if (pos >= 0) {
+    lista.splice(pos, 1);
+  } else {
+    if (lista.length >= 12) {
+      avisar("Já são 12 favoritos. Tire um antes de adicionar outro.", { tipo: "alerta" });
+      return;
+    }
+    lista.push(idNum);
+  }
+  salvarFavoritos(lista);
+}
+
+function moverFavorito(id, direcao) {
+  const lista = (configPDV.favoritos || []).map(Number);
+  const i = lista.indexOf(Number(id));
+  const j = i + direcao;
+  if (i < 0 || j < 0 || j >= lista.length) return;
+  [lista[i], lista[j]] = [lista[j], lista[i]];
+  salvarFavoritos(lista);
+}
+
+function salvarFavoritos(lista) {
+  configPDV = { ...configPDV, favoritos: lista };
+  carregarProdutos();
+  setDoc(doc(db, "configuracoes", "pdv"), { favoritos: lista }, { merge: true })
+    .catch(erro => {
+      console.error("Erro ao salvar os favoritos:", erro);
+      avisar("Não foi possível salvar os favoritos na nuvem.", { tipo: "erro" });
+    });
+}
+
+function renderizarFavoritosAdmin() {
+  const el = document.getElementById("lista-favoritos");
+  if (!el) return;
+  const porId = new Map(cacheProdutos.filter(p => p.ativo).map(p => [Number(p.id), p]));
+  const favoritos = (configPDV.favoritos || []).map(id => porId.get(Number(id))).filter(Boolean);
+  if (!favoritos.length) {
+    el.innerHTML = `<p class="vazio-texto">Nenhum favorito ainda. O PDV está mostrando os mais vendidos.</p>`;
+    return;
+  }
+  el.innerHTML = favoritos.map((p, i) => `
+    <div class="favorito-chip ${classeCategoria(categoriaDe(p))}">
+      <span class="ordem mono">${i + 1}</span>
+      <span>${esc(p.nome)} <small class="esc-hint">${esc(p.subcategoria || "")}</small></span>
+      <button type="button" class="icon-btn" onclick="moverFavorito(${Number(p.id)}, -1)" aria-label="Mover para antes" ${i === 0 ? "disabled" : ""}><i class="ri-arrow-left-s-line"></i></button>
+      <button type="button" class="icon-btn" onclick="moverFavorito(${Number(p.id)}, 1)" aria-label="Mover para depois" ${i === favoritos.length - 1 ? "disabled" : ""}><i class="ri-arrow-right-s-line"></i></button>
+      <button type="button" class="icon-btn" onclick="alternarFavorito(${Number(p.id)})" aria-label="Tirar dos favoritos"><i class="ri-close-line"></i></button>
+    </div>
+  `).join("");
+}
+
+// Status real da nuvem: online, enviando vendas pendentes ou sem internet
+function iniciarStatusNuvem() {
+  window.addEventListener("online", atualizarStatusNuvem);
+  window.addEventListener("offline", atualizarStatusNuvem);
+  // Mesmo filtro da escuta de vendas: o Firebase reaproveita a mesma conexão
+  onSnapshot(
+    query(collection(db, "vendas"), where("dataHora", ">=", LIMITE_JANELA_MS)),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      pendentesEnvio = snapshot.docs.filter(d => d.metadata.hasPendingWrites).length;
+      servidorRespondeu = servidorRespondeu || !snapshot.metadata.fromCache;
+      atualizarStatusNuvem();
+    },
+    (erro) => {
+      console.error("Erro no status da nuvem:", erro);
+      atualizarStatusNuvem();
+    }
+  );
+  atualizarStatusNuvem();
+}
+
+function atualizarStatusNuvem() {
+  const el = document.getElementById("status-nuvem");
+  const texto = document.getElementById("status-nuvem-texto");
+  if (!el || !texto) return;
+  const online = navigator.onLine !== false;
+  const vendasTexto = n => `${n} ${n === 1 ? "venda" : "vendas"}`;
+  let classe;
+  let rotulo;
+  let dica;
+
+  if (!online) {
+    classe = "offline";
+    rotulo = pendentesEnvio > 0 ? `Sem internet · ${pendentesEnvio} ${pendentesEnvio === 1 ? "pendente" : "pendentes"}` : "Sem internet";
+    dica = pendentesEnvio > 0
+      ? `${vendasTexto(pendentesEnvio)} salvas neste computador, aguardando a internet voltar para ir à nuvem.`
+      : "As vendas continuam salvas neste computador e vão para a nuvem quando a internet voltar.";
+  } else if (pendentesEnvio > 0) {
+    classe = "enviando";
+    rotulo = `Enviando ${vendasTexto(pendentesEnvio)}…`;
+    dica = "Vendas salvas neste computador, enviando para a nuvem.";
+  } else if (!servidorRespondeu) {
+    classe = "enviando";
+    rotulo = "Conectando…";
+    dica = "Conectando à nuvem.";
+  } else {
+    classe = "ok";
+    rotulo = "Online";
+    dica = "Tudo salvo na nuvem.";
+  }
+
+  el.className = `status-nuvem ${classe}`;
+  el.title = dica;
+  texto.textContent = rotulo;
 }
 
 // 13. HISTÓRICO DE TURNOS
@@ -1912,9 +2722,9 @@ function carregarHistoricoTurnos() {
               ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}
             </div>
             <div style="display:flex; align-items:center; gap:0.6rem;">
-              <strong class="mono" style="color:var(--success-text); font-weight:800;">R$ ${v.valorFinal.toFixed(2)}</strong>
+              <strong class="mono" style="color:var(--success-text); font-weight:800;">${fmt(v.valorFinal)}</strong>
               <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
-                <i class="ri-printer-line"></i> 2ª Via
+                <i class="ri-printer-line"></i> 2ª via
               </button>
             </div>
           </div>
@@ -1935,15 +2745,15 @@ function carregarHistoricoTurnos() {
             <div style="margin-top:0.35rem; font-size:0.92rem; font-weight:700;">
               Vendas: <strong>${vendasTurno.length}</strong>
               ${canceladasVisiveis.length ? ` | <span style="color:var(--danger);">Canceladas: ${canceladasVisiveis.length}</span>` : ""} |
-              Total do Turno: <strong class="mono" style="color:var(--success-text);">R$ ${totalTurno.toFixed(2)}</strong>
+              Total do Turno: <strong class="mono" style="color:var(--success-text);">${fmt(totalTurno)}</strong>
             </div>
           </div>
           <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
             <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'vendas')">
-              <i class="ri-printer-cloud-line"></i> Por Vendas
+              <i class="ri-printer-cloud-line"></i> Por vendas
             </button>
             <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'produtos')">
-              <i class="ri-list-check-2"></i> Por Produtos
+              <i class="ri-list-check-2"></i> Por produtos
             </button>
           </div>
         </div>
@@ -1957,6 +2767,15 @@ function carregarHistoricoTurnos() {
 }
 
 // 14. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
+// Dinheiro com troco: mostra quanto foi recebido e o troco no cupom
+function linhasTrocoCupom(v) {
+  const dinheiro = (v.pagamentos || []).filter(p => p.forma === "DINHEIRO");
+  const troco = r2(dinheiro.reduce((acc, p) => acc + (Number(p.troco) || 0), 0));
+  if (troco <= 0) return "";
+  const recebido = r2(dinheiro.reduce((acc, p) => acc + (Number(p.recebido) || Number(p.valor) || 0), 0));
+  return `<div>Recebido em dinheiro: ${fmt(recebido)}</div><div>Troco: ${fmt(troco)}</div>`;
+}
+
 function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   let v = buscarVenda(vendaId);
   if (!v && ultimaVendaObjeto && mesmoId(ultimaVendaObjeto.id, vendaId)) {
@@ -1987,8 +2806,8 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
         ${v.itens.map(i => `
           <tr>
             <td>${esc(i.nomeSnapshot)}</td>
-            <td class="cupom-right">${i.quantidade}x ${i.precoUnitarioSnapshot.toFixed(2)}</td>
-            <td class="cupom-right">${i.subtotal.toFixed(2)}</td>
+            <td class="cupom-right">${i.quantidade}x ${fmtNum(i.precoUnitarioSnapshot)}</td>
+            <td class="cupom-right">${fmtNum(i.subtotal)}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -1996,10 +2815,11 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
 
     <div class="cupom-divider"></div>
     ${v.desconto > 0 ? `
-      <div>Subtotal Bruto: R$ ${v.valorBruto.toFixed(2)}</div>
-      <div>Desconto: R$ ${v.desconto.toFixed(2)}</div>
+      <div>Subtotal Bruto: ${fmt(v.valorBruto)}</div>
+      <div>Desconto: ${fmt(v.desconto)}</div>
     ` : ""}
-    <div class="cupom-total">TOTAL: R$ ${v.valorFinal.toFixed(2)}</div>
+    <div class="cupom-total">TOTAL: ${fmt(v.valorFinal)}</div>
+    ${linhasTrocoCupom(v)}
 
     <div class="cupom-footer">
       Obrigado pela preferência!
@@ -2049,7 +2869,7 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
 
   const linhasResumoPag = Object.entries(resumoPagamentos)
     .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
-    .map(([label, valor]) => `<div>${esc(label)}: R$ ${valor.toFixed(2)}</div>`)
+    .map(([label, valor]) => `<div>${esc(label)}: ${fmt(valor)}</div>`)
     .join("");
 
   // Corpo principal alterna entre "Por Produtos" e "Por Vendas"
@@ -2093,7 +2913,7 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
             <tr>
               <td>${esc(p.nome)}</td>
               <td class="cupom-right">${p.quantidade}x</td>
-              <td class="cupom-right">${p.total.toFixed(2)}</td>
+              <td class="cupom-right">${fmtNum(p.total)}</td>
             </tr>
           `).join("") : `<tr><td colspan="3">Nenhum produto vendido neste turno.</td></tr>`}
         </tbody>
@@ -2120,7 +2940,7 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
                 ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}<br>
                 <small>[${esc(formatarPagamentoTexto(v))}]</small>
               </td>
-              <td class="cupom-right">${v.valorFinal.toFixed(2)}</td>
+              <td class="cupom-right">${fmtNum(v.valorFinal)}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -2148,11 +2968,11 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
     <div class="cupom-divider"></div>
     <div>Qtd. Vendas Concluídas: ${vendas.length}</div>
     ${totalDescontos > 0 ? `
-      <div>Total Bruto: R$ ${totalBruto.toFixed(2)}</div>
-      <div>Total Descontos: R$ ${totalDescontos.toFixed(2)}</div>
+      <div>Total Bruto: ${fmt(totalBruto)}</div>
+      <div>Total Descontos: ${fmt(totalDescontos)}</div>
     ` : ""}
-    <div class="cupom-total">TOTAL DO TURNO: R$ ${totalLiquido.toFixed(2)}</div>
-    ${canceladas.length ? `<div style="margin-top:4px; font-size:11px;">Auditoria - Canceladas: ${canceladas.length} (R$ ${totalCancelado.toFixed(2)})</div>` : ""}
+    <div class="cupom-total">TOTAL DO TURNO: ${fmt(totalLiquido)}</div>
+    ${canceladas.length ? `<div style="margin-top:4px; font-size:11px;">Auditoria - Canceladas: ${canceladas.length} (${fmt(totalCancelado)})</div>` : ""}
 
     <div class="cupom-footer">
       Fechamento emitido em ${new Date().toLocaleString("pt-BR")}
@@ -2203,7 +3023,18 @@ Object.assign(window, {
   adicionarAoCarrinho,
   adicionarProdutoPorId,
   alterarQtdItem,
+  removerItemCarrinho,
+  irParaVenda,
   limparCarrinho,
+  limparVendaAtual,
+  venderDinheiroExato,
+  atualizarPreviaTroco,
+  pedirBloqueio,
+  alternarSom,
+  alternarTema,
+  alternarFavorito,
+  moverFavorito,
+  salvarConfigPDV,
   atualizarCarrinhoUI,
   carregarHistoricoTurnos,
   imprimirCupomVenda80mm,

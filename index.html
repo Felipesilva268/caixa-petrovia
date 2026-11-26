@@ -2,15 +2,24 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#0e1116">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f5f8">
   <title>Caixa Petrovia — PDV</title>
+  <script>
+    // Aplica o tema salvo antes de desenhar a página (evita piscar o tema errado)
+    try {
+      if (localStorage.getItem("pdv-tema") === "escuro") {
+        document.documentElement.dataset.tema = "escuro";
+        document.querySelector('meta[name="theme-color"]').setAttribute("content", "#0e1116");
+      }
+    } catch (e) {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <link rel="stylesheet" href="style.css?v=20261126">
+  <link rel="stylesheet" href="style.css?v=20261126-2">
 </head>
 <body>
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
@@ -19,20 +28,21 @@
       <div class="logo-icon modal-logo">
         <i class="ri-gas-station-fill"></i>
       </div>
-      <h2>Caixa Bloqueado</h2>
+      <h2>Caixa bloqueado</h2>
       <p class="modal-subtitle">Digite sua senha de acesso para assumir o terminal.</p>
-      
+
       <form onsubmit="event.preventDefault(); autenticarOperador(event);">
-        <input 
-          type="password" 
-          id="input-senha-acesso" 
-          class="mono input-pin" 
-          placeholder="••••••••" 
-          autocomplete="off" 
+        <input
+          type="password"
+          id="input-senha-acesso"
+          class="mono input-pin"
+          placeholder="••••"
+          autocomplete="off"
+          aria-label="Senha de acesso"
           required
         >
         <button type="submit" class="btn btn-primary btn-full">
-          <i class="ri-lock-unlock-line"></i> Destravar Caixa [Enter]
+          <i class="ri-lock-unlock-line"></i> Destravar caixa <kbd>Enter</kbd>
         </button>
       </form>
 
@@ -46,27 +56,24 @@
     </div>
   </div>
 
-  <!-- MODAL 2: PAGAMENTO MISTO / ÚNICO (F2) -->
+  <!-- MODAL 2: PAGAMENTO (ÚNICO OU DIVIDIDO) -->
   <div id="modal-pagamento" class="modal-overlay no-print">
     <div class="modal-card modal-pagamento-card">
-      <div class="alert-icon">
-        <i class="ri-bank-card-line"></i>
-      </div>
-      <h2>Composição de Pagamento</h2>
-      
-      <!-- Resumo de Valores -->
+      <h2>Pagamento</h2>
+
+      <!-- Resumo de valores -->
       <div class="pagamento-resumo-box mono">
-        <div class="linha-resumo-pag"><span>Total da Venda:</span> <strong id="pag-val-total">R$ 0,00</strong></div>
-        <div class="linha-resumo-pag"><span>Já Informado:</span> <strong id="pag-val-pago" class="texto-pago">R$ 0,00</strong></div>
-        <div class="linha-resumo-pag total-restante"><span>Falta Restante:</span> <strong id="pag-val-restante" class="texto-restante">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag"><span>Total da venda</span> <strong id="pag-val-total">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag"><span>Já informado</span> <strong id="pag-val-pago" class="texto-pago">R$ 0,00</strong></div>
+        <div class="linha-resumo-pag total-restante"><span>Falta pagar</span> <strong id="pag-val-restante" class="texto-restante">R$ 0,00</strong></div>
       </div>
 
-      <!-- Lista de Pagamentos já adicionados nesta venda mista -->
+      <!-- Pagamentos já adicionados nesta venda (pagamento dividido) -->
       <div id="lista-pagamentos-parciais" class="pagamentos-parciais-lista"></div>
 
-      <!-- PASSO 1: ESCOLHER FORMA -->
+      <!-- PASSO 1: ESCOLHER A FORMA -->
       <div id="pagamento-passo-1">
-        <p class="modal-subtitle" id="subtitulo-passo-pag">Adicione a forma de pagamento:</p>
+        <p class="modal-subtitle" id="subtitulo-passo-pag">Escolha a forma de pagamento:</p>
         <div class="pagamento-opcoes-grid">
           <button type="button" class="btn-pag-opcao" onclick="selecionarFormaPagamento('DINHEIRO')">
             <span class="tecla-badge mono">1</span>
@@ -85,58 +92,65 @@
             <span><i class="ri-bank-card-2-line"></i> Débito</span>
           </button>
         </div>
-        
-        <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
-          <button type="button" onclick="fecharModalPagamento()" class="btn btn-secondary" style="flex:1;">
-            Cancelar [ESC]
+
+        <div class="linha-botoes">
+          <button type="button" onclick="fecharModalPagamento()" class="btn btn-secondary">
+            Cancelar <kbd>Esc</kbd>
           </button>
-          <button type="button" id="btn-concluir-pagamento-misto" onclick="finalizarVendaComposta()" class="btn btn-success hidden" style="flex:1;">
-            <i class="ri-check-double-line"></i> Concluir Venda [F2]
+          <button type="button" id="btn-concluir-pagamento-misto" onclick="finalizarVendaComposta()" class="btn btn-success hidden">
+            <i class="ri-check-double-line"></i> Concluir venda <kbd>F2</kbd>
           </button>
         </div>
       </div>
 
-      <!-- PASSO 1.1: DIGITAR O VALOR PARCIAL -->
+      <!-- PASSO 1.1: VALOR (EM DINHEIRO: VALOR RECEBIDO, COM TROCO) -->
       <div id="pagamento-passo-valor" class="hidden">
-        <p class="modal-subtitle" id="label-valor-parcial">Digite o valor para esta forma:</p>
-        <input type="number" id="input-valor-parcial" class="mono input-pin" step="0.01" min="0.01" placeholder="0,00">
+        <p class="modal-subtitle" id="label-valor-parcial">Digite o valor:</p>
+        <div id="notas-rapidas" class="notas-rapidas hidden" role="group" aria-label="Valor recebido"></div>
+        <input type="number" id="input-valor-parcial" class="mono input-pin" step="0.01" min="0.01" placeholder="0,00" inputmode="decimal" oninput="atualizarPreviaTroco()" aria-label="Valor">
+        <div id="previa-troco" class="previa-troco hidden" aria-live="polite"></div>
+        <p id="erro-valor-parcial" class="erro-msg hidden"></p>
         <div class="modal-actions-grid">
           <button type="button" onclick="voltarParaEscolhaForma()" class="btn btn-secondary">
-            Voltar [ESC]
+            Voltar <kbd>Esc</kbd>
           </button>
           <button type="button" onclick="confirmarValorParcial()" class="btn btn-primary">
-            Avançar [Enter]
+            Confirmar <kbd>Enter</kbd>
           </button>
         </div>
       </div>
 
       <!-- PASSO 2: BANDEIRA DO CARTÃO -->
       <div id="pagamento-passo-2" class="hidden">
-        <p id="pagamento-titulo-bandeira" class="modal-subtitle">Selecione a bandeira:</p>
+        <p id="pagamento-titulo-bandeira" class="modal-subtitle">Escolha a bandeira:</p>
         <div id="pagamento-lista-bandeiras" class="pagamento-opcoes-grid"></div>
         <p class="modal-hint">
-          <strong>[Backspace]</strong> Voltar • <strong>[ESC]</strong> Cancelar
+          <kbd>Backspace</kbd> Voltar · <kbd>Esc</kbd> Cancelar
         </p>
       </div>
     </div>
   </div>
 
-  <!-- MODAL 3: CONFIRMAÇÃO DE IMPRESSÃO PÓS-VENDA -->
+  <!-- MODAL 3: VENDA CONCLUÍDA (TROCO E IMPRESSÃO) -->
   <div id="modal-pos-venda" class="modal-overlay no-print">
     <div class="modal-card">
       <div class="alert-icon success-icon">
         <i class="ri-checkbox-circle-fill"></i>
       </div>
-      <h2>Venda Registrada!</h2>
-      <p class="modal-subtitle">Deseja imprimir o cupom desta venda na Elgin i8?</p>
+      <h2>Venda concluída</h2>
+      <div id="troco-pos-venda" class="troco-pos-venda hidden">
+        <span>Troco</span>
+        <strong id="troco-pos-venda-valor" class="mono">R$ 0,00</strong>
+      </div>
       <div id="resumo-modal-venda" class="mono resumo-modal-box"></div>
+      <p class="modal-subtitle">Imprimir o cupom na Elgin i8?</p>
 
       <div class="modal-actions-grid">
         <button type="button" onclick="confirmarImpressaoPosVenda(false)" class="btn btn-secondary">
-          <i class="ri-close-line"></i> Não [ESC]
+          <i class="ri-close-line"></i> Não <kbd>Esc</kbd>
         </button>
         <button type="button" id="btn-confirmar-impressao" onclick="confirmarImpressaoPosVenda(true)" class="btn btn-success">
-          <i class="ri-printer-line"></i> Imprimir [Enter]
+          <i class="ri-printer-line"></i> Imprimir <kbd>Enter</kbd>
         </button>
       </div>
     </div>
@@ -148,16 +162,17 @@
       <div class="alert-icon danger-icon">
         <i class="ri-error-warning-fill"></i>
       </div>
-      <h2>Cancelar Venda</h2>
+      <h2>Cancelar venda</h2>
       <p id="cancelar-venda-info" class="modal-subtitle">Confirme o motivo do cancelamento.</p>
 
       <form onsubmit="event.preventDefault(); confirmarCancelamentoVenda(event);">
         <input type="hidden" id="cancelar-venda-id" value="">
-        <input 
-          type="text" 
-          id="cancelar-venda-motivo" 
-          class="input-motivo" 
-          placeholder="Ex: Forma de pagamento errada, cliente desistiu..." 
+        <input
+          type="text"
+          id="cancelar-venda-motivo"
+          class="input-motivo"
+          placeholder="Ex: forma de pagamento errada, cliente desistiu..."
+          aria-label="Motivo do cancelamento"
           required
         >
 
@@ -167,9 +182,9 @@
           <span>Constar no fechamento de caixa (extrato 80mm e auditoria)</span>
         </label>
 
-        <div class="modal-actions-grid" style="margin-top: 1rem;">
+        <div class="modal-actions-grid linha-botoes">
           <button type="button" onclick="fecharModalCancelamento()" class="btn btn-secondary">
-            Voltar [ESC]
+            Voltar <kbd>Esc</kbd>
           </button>
           <button type="submit" class="btn btn-danger-solid">
             <i class="ri-close-circle-line"></i> Confirmar
@@ -179,50 +194,67 @@
     </div>
   </div>
 
+  <!-- MODAL 5: CONFIRMAÇÕES DO PRÓPRIO SISTEMA -->
+  <div id="dialogo" class="modal-overlay no-print" role="dialog" aria-modal="true" aria-labelledby="dialogo-titulo">
+    <div class="modal-card">
+      <div id="dialogo-icone" class="alert-icon"><i class="ri-question-line"></i></div>
+      <h2 id="dialogo-titulo">Confirmar</h2>
+      <p id="dialogo-mensagem" class="modal-subtitle"></p>
+      <div class="modal-actions-grid">
+        <button type="button" id="dialogo-cancelar" class="btn btn-secondary">Voltar <kbd>Esc</kbd></button>
+        <button type="button" id="dialogo-confirmar" class="btn btn-primary">Confirmar <kbd>Enter</kbd></button>
+      </div>
+    </div>
+  </div>
+
   <!-- BARRA SUPERIOR -->
   <header class="top-bar no-print">
     <div class="brand">
       <div class="logo-icon">
         <i class="ri-gas-station-fill"></i>
       </div>
-      <div>
-        <div class="brand-title-row">
-          <h1>Caixa Petrovia</h1>
-          <span id="badge-operador" class="badge badge-user">
-            <i class="ri-user-3-line"></i> ---
-          </span>
-          <span id="badge-nuvem" class="badge badge-cloud">
-            <i class="ri-cloud-line"></i> Nuvem Ativa
-          </span>
-        </div>
-        <span id="status-turno-badge" class="badge badge-closed">Caixa Fechado</span>
+      <div class="brand-text">
+        <h1>Caixa Petrovia</h1>
+        <span id="status-turno-badge" class="badge badge-closed">Caixa fechado</span>
       </div>
     </div>
 
-    <div class="top-actions">
-      <nav class="nav-tabs">
-        <button id="tab-pdv" class="tab-btn active" onclick="navegar('pdv', this)">
-          <i class="ri-shopping-bag-3-line"></i> PDV
-        </button>
-        <button id="tab-vendas" class="tab-btn" onclick="navegar('vendas', this)">
-          <i class="ri-receipt-line"></i> Vendas
-        </button>
-        <button id="tab-turnos" class="tab-btn" onclick="navegar('turnos', this)">
-          <i class="ri-file-chart-line"></i> Turnos & Extrato
-        </button>
-        <button id="tab-produtos" class="tab-btn" onclick="navegar('produtos', this)">
-          <i class="ri-price-tag-3-line"></i> Produtos
-        </button>
-        <button id="tab-dashboard" class="tab-btn hidden" onclick="navegar('dashboard', this)">
-          <i class="ri-bar-chart-grouped-line"></i> Dashboard
-        </button>
-        <button id="tab-admin" class="tab-btn hidden" onclick="navegar('admin', this)">
-          <i class="ri-shield-keyhole-line"></i> Admin
-        </button>
-      </nav>
+    <nav class="nav-tabs" aria-label="Telas">
+      <button id="tab-pdv" class="tab-btn active" onclick="navegar('pdv', this)">
+        <i class="ri-shopping-bag-3-line"></i> PDV
+      </button>
+      <button id="tab-vendas" class="tab-btn" onclick="navegar('vendas', this)">
+        <i class="ri-receipt-line"></i> Vendas
+      </button>
+      <button id="tab-turnos" class="tab-btn" onclick="navegar('turnos', this)">
+        <i class="ri-file-chart-line"></i> Turnos
+      </button>
+      <button id="tab-produtos" class="tab-btn" onclick="navegar('produtos', this)">
+        <i class="ri-price-tag-3-line"></i> Produtos
+      </button>
+      <button id="tab-dashboard" class="tab-btn hidden" onclick="navegar('dashboard', this)">
+        <i class="ri-bar-chart-grouped-line"></i> Dashboard
+      </button>
+      <button id="tab-admin" class="tab-btn hidden" onclick="navegar('admin', this)">
+        <i class="ri-shield-keyhole-line"></i> Admin
+      </button>
+    </nav>
 
-      <button onclick="bloquearCaixa()" class="btn btn-lock" title="Atalho: Tecla ESC">
-        <i class="ri-lock-2-line"></i> Trocar [ESC]
+    <div class="top-actions">
+      <span id="status-nuvem" class="status-nuvem" title="Conectando à nuvem">
+        <span class="status-ponto"></span><span id="status-nuvem-texto">Conectando…</span>
+      </span>
+      <span id="badge-operador" class="badge badge-user">
+        <i class="ri-user-3-line"></i> ---
+      </span>
+      <button id="btn-som" type="button" class="icon-btn" onclick="alternarSom()" title="Som ligado" aria-label="Desligar som">
+        <i class="ri-volume-up-line"></i>
+      </button>
+      <button id="btn-tema" type="button" class="icon-btn" onclick="alternarTema()" title="Usar tema escuro" aria-label="Usar tema escuro">
+        <i class="ri-moon-line"></i>
+      </button>
+      <button type="button" onclick="pedirBloqueio()" class="btn btn-lock" title="Atalho: Esc">
+        <i class="ri-lock-2-line"></i> <span class="rotulo">Trocar operador</span> <kbd>Esc</kbd>
       </button>
     </div>
   </header>
@@ -233,65 +265,65 @@
     <section id="tela-pdv" class="screen active">
       <div id="aviso-turno-fechado" class="alert-box">
         <div class="alert-icon"><i class="ri-time-line"></i></div>
-        <h3>Seu Caixa Está Fechado</h3>
-        <p>Abra o seu turno individual abaixo. Ele ficará salvo na nuvem e na memória mesmo quando outro operador usar a máquina.</p>
+        <h3>Seu caixa está fechado</h3>
+        <p>Abra o seu turno abaixo. Ele fica salvo na nuvem, mesmo quando outro operador usa o computador.</p>
         <div class="turno-actions">
           <button onclick="abrirTurno('MANHÃ (06h-14h)')" class="btn btn-primary">
-            <i class="ri-sun-line"></i> Abrir Manhã
+            <i class="ri-sun-line"></i> Abrir manhã
           </button>
           <button onclick="abrirTurno('TARDE (14h-22h)')" class="btn btn-primary">
-            <i class="ri-sun-cloudy-line"></i> Abrir Tarde
+            <i class="ri-sun-cloudy-line"></i> Abrir tarde
           </button>
           <button onclick="abrirTurno('NOITE (22h-06h)')" class="btn btn-primary">
-            <i class="ri-moon-clear-line"></i> Abrir Noite
+            <i class="ri-moon-clear-line"></i> Abrir noite
           </button>
         </div>
       </div>
 
       <div id="area-operacao-pdv" class="pdv-grid hidden">
-        <!-- Catálogo de Produtos (Somente texto e preço, sem fotos) -->
+        <!-- Catálogo de produtos -->
         <div class="catalogo-panel">
-          <div class="panel-header">
-            <div>
-              <h2><i class="ri-layout-grid-line"></i> Catálogo</h2>
-              <small class="esc-hint">Use Setas (⬆️⬇️⬅️➡️) + Enter para adicionar sem mouse</small>
-            </div>
-            <div class="catalogo-controles">
-              <input 
-                type="text" 
-                id="busca-produto-pdv" 
-                placeholder="Buscar ou Bipar... [F4]" 
-                oninput="aoDigitarBuscaPDV()" 
+          <div class="catalogo-topo">
+            <div class="busca-wrap">
+              <i class="ri-search-line"></i>
+              <input
+                type="text"
+                id="busca-produto-pdv"
+                placeholder="Buscar produto ou passar o código"
+                oninput="aoDigitarBuscaPDV()"
                 onkeydown="processarTeclasBuscaPDV(event)"
-                title="Atalho: F4 (Setas navegam, Enter adiciona)"
+                title="F4 vai para a busca. Setas escolhem, Enter adiciona. 6* antes do código lança 6 unidades."
+                aria-label="Buscar produto ou código"
+                autocomplete="off"
               >
-              <select id="ordenacao-pdv" onchange="carregarProdutos()" title="Ordenar produtos">
-                <option value="nome-asc">Ordem: A → Z</option>
-                <option value="nome-desc">Ordem: Z → A</option>
-                <option value="preco-desc">Preço: Maior → Menor</option>
-                <option value="preco-asc">Preço: Menor → Maior</option>
-              </select>
+              <kbd>F4</kbd>
             </div>
+            <select id="ordenacao-pdv" onchange="carregarProdutos()" title="Ordenar produtos" aria-label="Ordenar produtos">
+              <option value="nome-asc">A → Z</option>
+              <option value="nome-desc">Z → A</option>
+              <option value="preco-desc">Maior preço</option>
+              <option value="preco-asc">Menor preço</option>
+            </select>
           </div>
 
-          <!-- Abas de Categorias e Subcategorias -->
-          <div id="barra-categorias-pdv" class="pills-bar"></div>
-          <div id="barra-subcategorias-pdv" class="pills-bar sub-pills hidden"></div>
+          <!-- Categorias e embalagens -->
+          <div id="barra-categorias-pdv" class="pills-bar" role="group" aria-label="Categorias"></div>
+          <div id="barra-subcategorias-pdv" class="pills-bar sub-pills hidden" role="group" aria-label="Embalagens"></div>
 
-          <!-- FAIXA: MAIS VENDIDOS (EXIBIDA NA VISÃO GERAL) -->
-          <div id="faixa-mais-vendidos" class="mais-vendidos-box hidden"></div>
+          <div id="catalogo-rolagem" class="catalogo-rolagem">
+            <!-- Favoritos (ou mais vendidos, se não houver favoritos) -->
+            <div id="faixa-mais-vendidos" class="mais-vendidos-box hidden"></div>
 
-          <!-- Grade completa agrupada -->
-          <div id="grade-produtos-pdv" class="produtos-grid"></div>
+            <!-- Catálogo completo agrupado -->
+            <div id="grade-produtos-pdv" class="produtos-grid"></div>
+          </div>
         </div>
 
-        <!-- Cupom / Carrinho Atual -->
+        <!-- Venda atual -->
         <div class="carrinho-panel">
           <div class="panel-header panel-header-cart">
-            <div>
-              <h2><i class="ri-receipt-line"></i> Venda Atual</h2>
-              <small class="esc-hint">F2 paga • F4 busca • F9 limpa</small>
-            </div>
+            <h2><i class="ri-shopping-cart-2-line"></i> Venda atual</h2>
+            <span id="contagem-itens" class="badge badge-user">0 itens</span>
           </div>
 
           <div id="lista-carrinho" class="carrinho-itens"></div>
@@ -299,19 +331,22 @@
           <div class="resumo-venda">
             <div class="total-destaque-box">
               <div class="linha-resumo total">
-                <span>Total a Pagar</span>
+                <span>Total a pagar</span>
                 <strong id="valor-final" class="mono">R$ 0,00</strong>
               </div>
             </div>
 
             <div class="acoes-venda">
-              <button onclick="limparCarrinho()" class="btn btn-outline-danger" title="Atalho: F9">
-                <i class="ri-delete-bin-line"></i> Limpar [F9]
+              <button onclick="limparVendaAtual()" class="btn btn-outline-danger" title="Atalho: F9">
+                <i class="ri-delete-bin-line"></i> Limpar <kbd>F9</kbd>
               </button>
               <button onclick="abrirModalPagamento()" class="btn btn-primary" title="Atalho: F2">
-                <i class="ri-check-double-line"></i> Pagar [F2]
+                <i class="ri-check-double-line"></i> Pagar <kbd>F2</kbd>
               </button>
             </div>
+            <button onclick="venderDinheiroExato()" class="btn btn-secondary btn-full btn-exato" title="Atalho: F5">
+              <i class="ri-money-dollar-circle-line"></i> Dinheiro exato <kbd>F5</kbd>
+            </button>
           </div>
         </div>
       </div>
@@ -322,26 +357,26 @@
       <div class="card">
         <div class="header-historico">
           <div>
-            <h2><i class="ri-receipt-line"></i> Vendas Registradas</h2>
+            <h2><i class="ri-receipt-line"></i> Vendas registradas</h2>
             <p class="card-desc">Operadores cancelam apenas no turno aberto (sempre consta no caixa). Admin cancela qualquer venda e escolhe se consta no fechamento. Sem data selecionada, mostra os últimos 30 dias.</p>
           </div>
           <div class="catalogo-controles">
-            <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data">
-            <select id="filtro-vendas-pagamento" onchange="carregarAbaVendas()">
-              <option value="TODOS">Pagamento: Todos</option>
+            <input type="date" id="filtro-vendas-data" onchange="carregarAbaVendas()" title="Filtrar por data" aria-label="Filtrar por data">
+            <select id="filtro-vendas-pagamento" onchange="carregarAbaVendas()" aria-label="Filtrar por pagamento">
+              <option value="TODOS">Pagamento: todos</option>
               <option value="DINHEIRO">Dinheiro</option>
               <option value="PIX">PIX</option>
               <option value="CREDITO">Crédito</option>
               <option value="DEBITO">Débito</option>
-              <option value="MISTO">Misto (Múltiplas formas)</option>
+              <option value="MISTO">Misto (várias formas)</option>
             </select>
-            <select id="filtro-vendas-status" onchange="carregarAbaVendas()">
-              <option value="TODAS">Status: Todas</option>
+            <select id="filtro-vendas-status" onchange="carregarAbaVendas()" aria-label="Filtrar por status">
+              <option value="TODAS">Status: todas</option>
               <option value="CONCLUIDA">Concluídas</option>
               <option value="CANCELADA">Canceladas</option>
             </select>
             <button type="button" class="btn btn-secondary btn-sm" onclick="limparFiltrosVendas()">
-              Limpar
+              Limpar filtros
             </button>
           </div>
         </div>
@@ -353,17 +388,17 @@
     <!-- TELA 3: TURNOS, REIMPRESSÃO E EXTRATO -->
     <section id="tela-turnos" class="screen">
       <div class="card" id="card-controle-turno">
-        <h2><i class="ri-flashlight-line"></i> Meu Turno em Andamento</h2>
+        <h2><i class="ri-flashlight-line"></i> Meu turno em andamento</h2>
         <div id="info-turno-atual"></div>
       </div>
 
       <div class="card">
         <div class="header-historico">
           <div>
-            <h2><i class="ri-history-line"></i> Histórico de Turnos e 2ª Via de Vendas</h2>
+            <h2><i class="ri-history-line"></i> Histórico de turnos e 2ª via</h2>
             <p class="card-desc">Sem data selecionada, mostra os turnos abertos e os dos últimos 30 dias.</p>
           </div>
-          <input type="date" id="filtro-data" onchange="carregarHistoricoTurnos()">
+          <input type="date" id="filtro-data" onchange="carregarHistoricoTurnos()" aria-label="Filtrar turnos por data">
         </div>
         <div id="lista-historico-turnos" class="historico-lista"></div>
       </div>
@@ -372,12 +407,12 @@
     <!-- TELA 4: GESTÃO DE PRODUTOS -->
     <section id="tela-produtos" class="screen">
       <div class="card">
-        <h2 id="titulo-form-produto"><i class="ri-add-circle-line"></i> Cadastrar Produto no Catálogo</h2>
+        <h2 id="titulo-form-produto"><i class="ri-add-circle-line"></i> Cadastrar produto no catálogo</h2>
         <form id="form-produto" onsubmit="salvarProduto(event)" class="form-grid-produtos">
           <input type="hidden" id="prod-id-edicao" value="">
 
           <div class="field-group">
-            <label for="prod-nome">Nome / Marca</label>
+            <label for="prod-nome">Nome / marca</label>
             <input type="text" id="prod-nome" placeholder="Ex: Heineken, Coca-Cola..." required>
           </div>
 
@@ -387,25 +422,25 @@
           </div>
 
           <div class="field-group">
-            <label for="prod-subcategoria">Tipo / Embalagem</label>
+            <label for="prod-subcategoria">Tipo / embalagem</label>
             <select id="prod-subcategoria" required></select>
           </div>
 
           <div class="field-group">
             <label for="prod-preco">Preço (R$)</label>
-            <input type="number" id="prod-preco" step="0.01" min="0.01" placeholder="0,00" required>
+            <input type="number" id="prod-preco" step="0.01" min="0.01" placeholder="0,00" inputmode="decimal" required>
           </div>
 
           <div class="field-group">
-            <label for="prod-codigo">Código / Barras</label>
+            <label for="prod-codigo">Código / barras</label>
             <input type="text" id="prod-codigo" placeholder="Opcional">
           </div>
 
-          <div class="field-group field-action" style="display:flex; flex-direction:row; gap:0.4rem;">
+          <div class="field-group field-action">
             <button type="submit" id="btn-submit-produto" class="btn btn-primary btn-full">
               <i class="ri-save-line"></i> Salvar
             </button>
-            <button type="button" id="btn-cancelar-prod" onclick="cancelarEdicaoProduto()" class="btn btn-secondary hidden">
+            <button type="button" id="btn-cancelar-prod" onclick="cancelarEdicaoProduto()" class="btn btn-secondary hidden" aria-label="Cancelar edição">
               ✕
             </button>
           </div>
@@ -413,17 +448,23 @@
       </div>
 
       <div class="card">
+        <h2><i class="ri-star-line"></i> Favoritos do PDV</h2>
+        <p class="card-desc">Até 12 produtos que ficam sempre no topo do PDV, na mesma posição. Use a estrela na lista abaixo para adicionar e as setas para mudar a ordem. Sem favoritos, o PDV mostra os mais vendidos.</p>
+        <div id="lista-favoritos" class="favoritos-lista"></div>
+      </div>
+
+      <div class="card">
         <div class="panel-header" style="margin-bottom: 1rem;">
-          <h2><i class="ri-archive-line"></i> Produtos Ativos</h2>
+          <h2><i class="ri-archive-line"></i> Produtos ativos</h2>
           <div class="catalogo-controles">
-            <select id="filtro-cat-cadastro" onchange="carregarProdutos()">
-              <option value="TODAS">Todas as Categorias</option>
+            <select id="filtro-cat-cadastro" onchange="carregarProdutos()" aria-label="Filtrar por categoria">
+              <option value="TODAS">Todas as categorias</option>
             </select>
-            <select id="ordenacao-cadastro" onchange="carregarProdutos()">
-              <option value="nome-asc">Ordem: A → Z</option>
-              <option value="nome-desc">Ordem: Z → A</option>
-              <option value="preco-desc">Maior Preço</option>
-              <option value="preco-asc">Menor Preço</option>
+            <select id="ordenacao-cadastro" onchange="carregarProdutos()" aria-label="Ordenar produtos">
+              <option value="nome-asc">A → Z</option>
+              <option value="nome-desc">Z → A</option>
+              <option value="preco-desc">Maior preço</option>
+              <option value="preco-asc">Menor preço</option>
             </select>
           </div>
         </div>
@@ -431,16 +472,16 @@
       </div>
     </section>
 
-    <!-- TELA 5: DASHBOARD DE RELATÓRIOS DE PICO (RESTRITO AO ADMIN) -->
+    <!-- TELA 5: DASHBOARD (RESTRITO AO ADMIN) -->
     <section id="tela-dashboard" class="screen">
       <div class="card">
         <div class="panel-header">
           <div>
-            <h2><i class="ri-bar-chart-box-line"></i> Inteligência de Vendas & Horários de Pico</h2>
-            <p class="card-desc">Análise em tempo real das vendas concluídas no posto (vendas canceladas são excluídas). Sem data selecionada, mostra os últimos 30 dias.</p>
+            <h2><i class="ri-bar-chart-box-line"></i> Vendas e horários de pico</h2>
+            <p class="card-desc">Vendas concluídas no posto (as canceladas ficam de fora). Sem data selecionada, mostra os últimos 30 dias.</p>
           </div>
           <div class="catalogo-controles">
-            <input type="date" id="filtro-data-dashboard" onchange="renderizarDashboard()" title="Filtrar por data específica">
+            <input type="date" id="filtro-data-dashboard" onchange="renderizarDashboard()" title="Filtrar por data" aria-label="Filtrar por data">
             <button type="button" class="btn btn-secondary btn-sm" onclick="limparFiltroDashboard()">
               Últimos 30 dias
             </button>
@@ -449,19 +490,19 @@
 
         <div class="kpi-grid">
           <div class="kpi-card kpi-purple">
-            <span>Faturamento Total</span>
+            <span>Faturamento total</span>
             <strong id="kpi-faturamento" class="mono">R$ 0,00</strong>
           </div>
           <div class="kpi-card kpi-teal">
-            <span>Vendas Concluídas</span>
+            <span>Vendas concluídas</span>
             <strong id="kpi-qtd-vendas" class="mono">0</strong>
           </div>
           <div class="kpi-card kpi-blue">
-            <span>Itens Vendidos</span>
+            <span>Itens vendidos</span>
             <strong id="kpi-itens-vendidos" class="mono">0</strong>
           </div>
           <div class="kpi-card kpi-amber">
-            <span>Horário de Maior Pico</span>
+            <span>Horário de maior pico</span>
             <strong id="kpi-hora-pico" class="mono">---</strong>
           </div>
         </div>
@@ -469,16 +510,16 @@
 
       <div class="dashboard-grid">
         <div class="card">
-          <h2><i class="ri-time-line"></i> Volume de Vendas por Hora (00h às 23h)</h2>
-          <p class="card-desc">Identifique os horários de maior movimento na conveniência/pista.</p>
+          <h2><i class="ri-time-line"></i> Vendas por hora (00h às 23h)</h2>
+          <p class="card-desc">Horários de maior movimento na conveniência e na pista.</p>
           <div class="chart-container">
             <canvas id="chart-picos"></canvas>
           </div>
         </div>
 
         <div class="card">
-          <h2><i class="ri-trophy-line"></i> Top 10 Produtos Mais Vendidos</h2>
-          <p class="card-desc">Ranking acumulado por unidades vendidas.</p>
+          <h2><i class="ri-trophy-line"></i> Top 10 produtos mais vendidos</h2>
+          <p class="card-desc">Ranking por unidades vendidas no período.</p>
           <div class="chart-container">
             <canvas id="chart-produtos"></canvas>
           </div>
@@ -486,30 +527,55 @@
       </div>
     </section>
 
-    <!-- TELA 6: ADMINISTRAÇÃO DE OPERADORES E CREDENCIAIS (RESTRITO AO ADMIN) -->
+    <!-- TELA 6: ADMINISTRAÇÃO (RESTRITO AO ADMIN) -->
     <section id="tela-admin" class="screen">
       <div class="card">
-        <h2><i class="ri-shield-user-line"></i> Meu Perfil de Administrador (Master)</h2>
+        <h2><i class="ri-shield-user-line"></i> Meu perfil de administrador</h2>
         <p class="card-desc">Altere seu nome de exibição e sua senha Master. Seus turnos e registros permanecem intactos.</p>
         <form id="form-admin-master" onsubmit="salvarConfigMaster(event)" class="form-grid form-admin">
-          <input type="text" id="admin-nome" placeholder="Nome do Administrador" required>
-          <input type="text" id="admin-senha" class="mono" placeholder="Nova Senha Master" required>
+          <input type="text" id="admin-nome" placeholder="Nome do administrador" aria-label="Nome do administrador" required>
+          <input type="text" id="admin-senha" class="mono" placeholder="Nova senha Master" aria-label="Nova senha Master" required>
           <button type="submit" class="btn btn-primary">
-            <i class="ri-key-2-line"></i> Atualizar Senha Master
+            <i class="ri-key-2-line"></i> Atualizar senha Master
           </button>
         </form>
       </div>
 
       <div class="card">
-        <h2 id="titulo-form-operador"><i class="ri-user-add-line"></i> Cadastrar Novo Operador</h2>
+        <h2><i class="ri-lock-password-line"></i> Bloqueio do caixa</h2>
+        <p class="card-desc">Quando o caixa pede a senha de novo. Vale para todos os computadores.</p>
+        <form id="form-config-pdv" onsubmit="salvarConfigPDV(event)" class="form-config">
+          <label class="checkbox-linha">
+            <input type="checkbox" id="cfg-bloquear-apos-venda">
+            <span>Pedir a senha depois de cada venda</span>
+          </label>
+          <div class="field-group">
+            <label for="cfg-bloqueio-inatividade">Bloquear sozinho depois de</label>
+            <select id="cfg-bloqueio-inatividade">
+              <option value="0">Nunca</option>
+              <option value="1">1 minuto parado</option>
+              <option value="2">2 minutos parado</option>
+              <option value="5">5 minutos parado</option>
+              <option value="10">10 minutos parado</option>
+              <option value="15">15 minutos parado</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">
+            <i class="ri-save-line"></i> Salvar
+          </button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2 id="titulo-form-operador"><i class="ri-user-add-line"></i> Cadastrar novo operador</h2>
         <p class="card-desc">A edição de nome ou senha mantém o mesmo ID do operador, preservando todos os turnos e vendas do perfil.</p>
         <form id="form-operador" onsubmit="salvarOperador(event)" class="form-grid form-admin">
           <input type="hidden" id="op-id-edicao" value="">
-          <input type="text" id="op-nome" placeholder="Nome do Frentista / Operador" required>
-          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" required>
-          <div style="display: flex; gap: 0.5rem;">
+          <input type="text" id="op-nome" placeholder="Nome do frentista / operador" aria-label="Nome do operador" required>
+          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" aria-label="Senha do operador" required>
+          <div class="acoes-linha">
             <button type="submit" id="btn-submit-operador" class="btn btn-success">
-              <i class="ri-user-follow-line"></i> Cadastrar Operador
+              <i class="ri-user-follow-line"></i> Cadastrar operador
             </button>
             <button type="button" id="btn-cancelar-edicao" onclick="cancelarEdicaoOperador()" class="btn btn-secondary hidden">
               Cancelar
@@ -519,16 +585,41 @@
       </div>
 
       <div class="card">
-        <h2><i class="ri-group-line"></i> Operadores Cadastrados</h2>
+        <h2><i class="ri-group-line"></i> Operadores cadastrados</h2>
         <div id="lista-operadores" class="tabela-lista"></div>
       </div>
     </section>
   </main>
 
+  <!-- AVISOS RÁPIDOS -->
+  <div id="avisos" class="avisos no-print" aria-live="polite"></div>
+
+  <!-- ATALHOS SEMPRE À VISTA NO PDV -->
+  <div id="barra-atalhos" class="barra-atalhos no-print hidden" aria-label="Atalhos do teclado">
+    <span><kbd>F2</kbd> Pagar</span>
+    <span><kbd>F5</kbd> Dinheiro exato</span>
+    <span><kbd>F4</kbd> Buscar</span>
+    <span><kbd>← ↑ ↓ →</kbd> + <kbd>Enter</kbd> Escolher produto</span>
+    <span><kbd>6*</kbd> + código: 6 unidades</span>
+    <span><kbd>F9</kbd> Limpar venda</span>
+    <span><kbd>Esc</kbd> Trocar operador</span>
+  </div>
+
+  <!-- CELULAR E TABLET: TOTAL E PAGAR SEMPRE À VISTA -->
+  <div id="barra-venda-mobile" class="barra-venda-mobile no-print hidden">
+    <button type="button" class="ver-venda" onclick="irParaVenda()">
+      <small id="mobile-itens">Venda atual · 0 itens</small>
+      <strong id="mobile-total">R$ 0,00</strong>
+    </button>
+    <button type="button" class="btn btn-primary" onclick="abrirModalPagamento()">
+      <i class="ri-check-double-line"></i> Pagar
+    </button>
+  </div>
+
   <!-- ÁREA EXCLUSIVA PARA IMPRESSÃO TÉRMICA 80MM (ELGIN i8) -->
   <div id="area-impressao" class="print-only"></div>
 
   <!-- MOTOR COM FIREBASE INTEGRADO -->
-  <script type="module" src="app.js?v=20261126"></script>
+  <script type="module" src="app.js?v=20261126-2"></script>
 </body>
 </html>
