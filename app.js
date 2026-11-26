@@ -7,7 +7,10 @@ import {
   doc,
   setDoc,
   deleteDoc,
-  onSnapshot
+  onSnapshot,
+  query,
+  where,
+  getDocs
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // 1. CONFIGURAÇÃO DIRETA DO FIREBASE (CAIXA PETROVIA)
@@ -73,6 +76,123 @@ const BANDEIRAS_PAGAMENTO = {
   DEBITO: ["Elo", "Master", "Visa"]
 };
 
+// Janela de vendas acompanhadas em tempo real (performance). Datas mais antigas são buscadas sob demanda.
+const JANELA_TEMPO_REAL_DIAS = 30;
+const LIMITE_JANELA_MS = Date.now() - JANELA_TEMPO_REAL_DIAS * 24 * 60 * 60 * 1000;
+
+// Vendas antigas (fora da janela) carregadas sob demanda, por ID
+const vendasAntigas = new Map();
+const diasAntigosCarregados = new Set();
+const turnosAntigosCarregados = new Set();
+
+let abrindoTurno = false;
+
+// Escapa texto antes de inserir via innerHTML (proteção contra XSS)
+function esc(valor) {
+  return String(valor ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Arredonda valores monetários para 2 casas (evita erros de centavos do ponto flutuante)
+function r2(valor) {
+  return Math.round((Number(valor) + Number.EPSILON) * 100) / 100;
+}
+
+// Compara IDs antigos (numéricos) e novos (texto) de forma segura
+function mesmoId(a, b) {
+  return a !== null && a !== undefined && b !== null && b !== undefined && String(a) === String(b);
+}
+
+// ID único gerado no próprio aparelho (funciona offline, sem colisão entre terminais)
+// Formato: AAMMDD-HHMM-XXXX  (ex: 261126-1432-7F3K)
+function gerarIdUnico() {
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, "0");
+  const data = `${String(d.getFullYear()).slice(-2)}${p2(d.getMonth() + 1)}${p2(d.getDate())}`;
+  const hora = `${p2(d.getHours())}${p2(d.getMinutes())}`;
+  const alfabeto = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  const sufixo = Array.from(bytes, b => alfabeto[b % alfabeto.length]).join("");
+  return `${data}-${hora}-${sufixo}`;
+}
+
+// Data local (fuso do computador) no formato AAAA-MM-DD — substitui toISOString(), que usa UTC
+function dataLocalISO(timestamp) {
+  const d = new Date(timestamp);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function intervaloDoDiaLocal(dataISO) {
+  const inicio = new Date(`${dataISO}T00:00:00`).getTime();
+  const fim = new Date(`${dataISO}T00:00:00`);
+  fim.setDate(fim.getDate() + 1);
+  return { inicio, fim: fim.getTime() };
+}
+
+// Todas as vendas conhecidas: tempo real (janela) + antigas carregadas sob demanda
+function todasVendas() {
+  const idsTempoReal = new Set(cacheVendas.map(v => String(v.id)));
+  const extras = [...vendasAntigas.values()].filter(v => !idsTempoReal.has(String(v.id)));
+  return [...cacheVendas, ...extras];
+}
+
+function buscarVenda(id) {
+  return todasVendas().find(v => mesmoId(v.id, id)) || null;
+}
+
+function registrarVendasAntigas(snapshot) {
+  snapshot.docs.forEach(d => {
+    const v = d.data();
+    vendasAntigas.set(String(v.id), v);
+  });
+}
+
+// Garante que as vendas de um dia fora da janela estejam carregadas
+async function garantirVendasDoDia(dataISO) {
+  if (!dataISO || diasAntigosCarregados.has(dataISO)) return false;
+  const { inicio, fim } = intervaloDoDiaLocal(dataISO);
+  if (inicio >= LIMITE_JANELA_MS) return false;
+  diasAntigosCarregados.add(dataISO);
+  try {
+    const snap = await getDocs(query(
+      collection(db, "vendas"),
+      where("dataHora", ">=", inicio),
+      where("dataHora", "<", fim)
+    ));
+    registrarVendasAntigas(snap);
+    return true;
+  } catch (erro) {
+    diasAntigosCarregados.delete(dataISO);
+    console.error("Erro ao carregar vendas antigas:", erro);
+    return false;
+  }
+}
+
+// Garante que as vendas de turnos fora da janela estejam carregadas
+async function garantirVendasDosTurnos(turnos) {
+  const pendentes = turnos.filter(t =>
+    t.dataHoraAbertura < LIMITE_JANELA_MS && !turnosAntigosCarregados.has(String(t.id))
+  );
+  if (!pendentes.length) return false;
+  pendentes.forEach(t => turnosAntigosCarregados.add(String(t.id)));
+  try {
+    await Promise.all(pendentes.map(async t => {
+      const snap = await getDocs(query(collection(db, "vendas"), where("turnoId", "==", t.id)));
+      registrarVendasAntigas(snap);
+    }));
+    return true;
+  } catch (erro) {
+    pendentes.forEach(t => turnosAntigosCarregados.delete(String(t.id)));
+    console.error("Erro ao carregar vendas de turnos antigos:", erro);
+    return false;
+  }
+}
+
 function gerarProximoId(lista) {
   if (!lista.length) return 1;
   return Math.max(...lista.map(item => Number(item.id) || 0)) + 1;
@@ -111,7 +231,7 @@ function iniciarSincronizacaoFirebase() {
       configMaster = docMaster.data();
       if (usuarioLogado?.isAdmin) {
         usuarioLogado.nome = configMaster.nome;
-        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${usuarioLogado.nome}`;
+        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${esc(usuarioLogado.nome)}`;
         preencherCamposMaster();
       }
     }
@@ -123,7 +243,7 @@ function iniciarSincronizacaoFirebase() {
       const meuPerfil = cacheUsuarios.find(u => u.id === usuarioLogado.id);
       if (meuPerfil) {
         usuarioLogado.nome = meuPerfil.nome;
-        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${usuarioLogado.nome}`;
+        document.getElementById("badge-operador").innerHTML = `<i class="ri-user-3-line"></i> ${esc(usuarioLogado.nome)}`;
       }
     }
     if (usuarioLogado?.isAdmin) carregarOperadores();
@@ -148,7 +268,8 @@ function iniciarSincronizacaoFirebase() {
     }
   });
 
-  onSnapshot(collection(db, "vendas"), (snapshot) => {
+  // Somente vendas dos últimos JANELA_TEMPO_REAL_DIAS dias em tempo real
+  onSnapshot(query(collection(db, "vendas"), where("dataHora", ">=", LIMITE_JANELA_MS)), (snapshot) => {
     cacheVendas = snapshot.docs.map(d => d.data());
     if (usuarioLogado) {
       renderizarFaixaMaisVendidos();
@@ -266,6 +387,7 @@ window.addEventListener("keydown", (e) => {
 
   if (e.key === "Escape") {
     e.preventDefault();
+    if (carrinho.length && !confirm("Há itens na venda atual. Bloquear o caixa e descartar a venda?")) return;
     bloquearCaixa();
     return;
   }
@@ -296,8 +418,7 @@ window.addEventListener("keydown", (e) => {
   }
 
   const elAtivo = document.activeElement;
-  const estaNoDescontoOuSelect = elAtivo && (elAtivo.id === "input-desconto" || elAtivo.tagName === "SELECT");
-  if (estaNoDescontoOuSelect) return;
+  if (elAtivo && elAtivo.tagName === "SELECT") return;
 
   if (["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(e.key)) {
     if (elAtivo?.id === "busca-produto-pdv" && (e.key === "ArrowLeft" || e.key === "ArrowRight") && elAtivo.value.length > 0 && indiceFocoPDV === -1) {
@@ -386,8 +507,7 @@ function processarTeclasBuscaPDV(e) {
     const ativos = cacheProdutos.filter(p => p.ativo);
     const porCodigo = ativos.find(p => p.codigoInterno && p.codigoInterno.toLowerCase() === termo);
     if (porCodigo) {
-      const sub = porCodigo.subcategoria || "Diversos";
-      adicionarAoCarrinho(porCodigo.id, `${porCodigo.nome} (${sub})`, porCodigo.precoUnitario);
+      adicionarProdutoPorId(porCodigo.id);
       input.value = "";
       indiceFocoPDV = -1;
       carregarProdutos();
@@ -448,7 +568,7 @@ function liberarTerminal() {
   document.getElementById("modal-bloqueio").classList.remove("active");
 
   document.getElementById("badge-operador").innerHTML = `
-    <i class="ri-user-3-line"></i> ${usuarioLogado.nome}
+    <i class="ri-user-3-line"></i> ${esc(usuarioLogado.nome)}
   `;
 
   const tabAdmin = document.getElementById("tab-admin");
@@ -623,14 +743,14 @@ function carregarOperadores() {
   container.innerHTML = operadores.map(op => `
     <div class="item-carrinho">
       <div>
-        <strong>${op.nome}</strong>
-        <div class="mono" style="font-size:0.82rem; color:var(--text-muted);">Senha: ${op.senha} | ID Fixo: #${op.id}</div>
+        <strong>${esc(op.nome)}</strong>
+        <div class="mono" style="font-size:0.82rem; color:var(--text-muted);">Senha: ${esc(op.senha)} | ID Fixo: #${esc(op.id)}</div>
       </div>
       <div style="display:flex; gap:0.4rem;">
-        <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoOperador(${op.id})">
+        <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoOperador(${Number(op.id)})">
           <i class="ri-edit-line"></i> Editar
         </button>
-        <button class="btn btn-danger btn-sm" onclick="removerOperador(${op.id})">
+        <button class="btn btn-danger btn-sm" onclick="removerOperador(${Number(op.id)})">
           <i class="ri-delete-bin-line"></i> Excluir
         </button>
       </div>
@@ -686,7 +806,7 @@ function salvarProduto(e) {
   const nome = document.getElementById("prod-nome").value.trim();
   const categoria = document.getElementById("prod-categoria").value;
   const subcategoria = document.getElementById("prod-subcategoria").value;
-  const precoUnitario = parseFloat(document.getElementById("prod-preco").value);
+  const precoUnitario = r2(parseFloat(document.getElementById("prod-preco").value));
   const codigoInterno = document.getElementById("prod-codigo").value.trim();
 
   const idFinal = idEdicao ? Number(idEdicao) : gerarProximoId(cacheProdutos);
@@ -727,9 +847,9 @@ function renderizarFiltrosCategoriaPDV() {
     <button 
       type="button"
       class="pill-btn ${categoriaAtivaPDV === cat ? 'active' : ''}" 
-      onclick="selecionarCategoriaPDV('${cat}')"
+      onclick="selecionarCategoriaPDV('${esc(cat)}')"
     >
-      ${cat === "TODAS" ? "Catálogo Completo (Todos)" : cat}
+      ${cat === "TODAS" ? "Catálogo Completo (Todos)" : esc(cat)}
     </button>
   `).join("");
 
@@ -740,9 +860,9 @@ function renderizarFiltrosCategoriaPDV() {
       <button 
         type="button"
         class="pill-btn ${subcategoriaAtivaPDV === sub ? 'active' : ''}" 
-        onclick="selecionarSubcategoriaPDV('${sub}')"
+        onclick="selecionarSubcategoriaPDV('${esc(sub)}')"
       >
-        ${sub === "TODAS" ? "Todos os tamanhos" : sub}
+        ${sub === "TODAS" ? "Todos os tamanhos" : esc(sub)}
       </button>
     `).join("");
   } else {
@@ -778,6 +898,7 @@ function renderizarFaixaMaisVendidos() {
     return;
   }
 
+  // Considera apenas a janela em tempo real (últimos JANELA_TEMPO_REAL_DIAS dias)
   const contagemPorId = {};
   cacheVendas
     .filter(v => v.status === "CONCLUIDA")
@@ -807,12 +928,11 @@ function renderizarFaixaMaisVendidos() {
   }
 
   const cardsHTML = topProdutos.map(p => {
-    const nomeCompleto = `${p.nome} (${p.subcategoria})`;
     return `
-      <div class="produto-card" onclick="adicionarAoCarrinho(${p.id}, '${nomeCompleto.replace(/'/g, "\\'")}', ${p.precoUnitario})">
+      <div class="produto-card" onclick="adicionarProdutoPorId(${Number(p.id)})">
         <div>
-          <span class="prod-cat-tag">${p.subcategoria}</span>
-          <strong>${p.nome}</strong>
+          <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
+          <strong>${esc(p.nome)}</strong>
         </div>
         <span class="preco-tag">R$ ${p.precoUnitario.toFixed(2)}</span>
       </div>
@@ -871,9 +991,9 @@ function carregarProdutos() {
 }
 
 function desativarProduto(id) {
-  const prod = cacheProdutos.find(p => p.id === id);
+  const prod = cacheProdutos.find(p => p.id === Number(id));
   if (!prod) return;
-  setDoc(doc(db, "produtos", String(id)), { ...prod, ativo: false });
+  setDoc(doc(db, "produtos", String(prod.id)), { ...prod, ativo: false });
 }
 
 function renderizarGradePDV(produtos, criterioOrdem) {
@@ -906,12 +1026,11 @@ function renderizarGradePDV(produtos, criterioOrdem) {
       if (!itensSub.length) return "";
 
       const cardsHTML = itensSub.map(p => {
-        const nomeCompleto = `${p.nome} (${p.subcategoria})`;
         return `
-          <div class="produto-card" onclick="adicionarAoCarrinho(${p.id}, '${nomeCompleto.replace(/'/g, "\\'")}', ${p.precoUnitario})">
+          <div class="produto-card" onclick="adicionarProdutoPorId(${Number(p.id)})">
             <div>
-              <span class="prod-cat-tag">${p.subcategoria}</span>
-              <strong>${p.nome}</strong>
+              <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
+              <strong>${esc(p.nome)}</strong>
             </div>
             <span class="preco-tag">R$ ${p.precoUnitario.toFixed(2)}</span>
           </div>
@@ -920,7 +1039,7 @@ function renderizarGradePDV(produtos, criterioOrdem) {
 
       return `
         <div class="subcategoria-bloco">
-          <div class="subcategoria-titulo">${sub}</div>
+          <div class="subcategoria-titulo">${esc(sub)}</div>
           <div class="produtos-grid">${cardsHTML}</div>
         </div>
       `;
@@ -929,7 +1048,7 @@ function renderizarGradePDV(produtos, criterioOrdem) {
     return `
       <div class="catalogo-secao">
         <div class="catalogo-secao-header">
-          <h3><i class="ri-folder-open-line"></i> ${categoria}</h3>
+          <h3><i class="ri-folder-open-line"></i> ${esc(categoria)}</h3>
           <span class="badge badge-user">${produtosDaCategoria.length} ${produtosDaCategoria.length === 1 ? 'item' : 'itens'}</span>
         </div>
         <div class="catalogo-secao-body">
@@ -965,17 +1084,17 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
     const linhasHTML = itensCat.map(p => `
       <div class="item-carrinho">
         <div>
-          <span class="prod-cat-tag">${p.subcategoria}</span>
-          <strong>${p.nome}</strong> ${p.codigoInterno ? `<small class="mono">[${p.codigoInterno}]</small>` : ""}
+          <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
+          <strong>${esc(p.nome)}</strong> ${p.codigoInterno ? `<small class="mono">[${esc(p.codigoInterno)}]</small>` : ""}
           <div class="mono" style="color:var(--success-text); font-size:0.88rem; font-weight:800; margin-top:0.15rem;">
             R$ ${p.precoUnitario.toFixed(2)}
           </div>
         </div>
         <div style="display:flex; gap:0.4rem;">
-          <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoProduto(${p.id})">
+          <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoProduto(${Number(p.id)})">
             <i class="ri-edit-line"></i> Editar
           </button>
-          <button class="btn btn-danger btn-sm" onclick="desativarProduto(${p.id})">Remover</button>
+          <button class="btn btn-danger btn-sm" onclick="desativarProduto(${Number(p.id)})">Remover</button>
         </div>
       </div>
     `).join("");
@@ -983,7 +1102,7 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
     return `
       <div class="catalogo-secao" style="margin-bottom: 1rem;">
         <div class="catalogo-secao-header">
-          <h3><i class="ri-price-tag-3-line"></i> ${categoria}</h3>
+          <h3><i class="ri-price-tag-3-line"></i> ${esc(categoria)}</h3>
           <span class="badge badge-user">${itensCat.length}</span>
         </div>
         <div class="catalogo-secao-body">
@@ -1016,19 +1135,17 @@ function fecharModalPagamento() {
 }
 
 function calcularTotalVendaCarrinho() {
-  const bruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
-  const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
-  return Math.max(0, bruto - desconto);
+  return r2(carrinho.reduce((acc, i) => acc + i.subtotal, 0));
 }
 
 function calcularValorPagoParcialmente() {
-  return pagamentosParciaisVenda.reduce((acc, p) => acc + p.valor, 0);
+  return r2(pagamentosParciaisVenda.reduce((acc, p) => acc + p.valor, 0));
 }
 
 function atualizarInterfaceModalPagamento() {
   const totalVenda = calcularTotalVendaCarrinho();
   const totalPago = calcularValorPagoParcialmente();
-  const restante = Math.max(0, totalVenda - totalPago);
+  const restante = r2(Math.max(0, totalVenda - totalPago));
 
   document.getElementById("pag-val-total").textContent = `R$ ${totalVenda.toFixed(2)}`;
   document.getElementById("pag-val-pago").textContent = `R$ ${totalPago.toFixed(2)}`;
@@ -1040,7 +1157,7 @@ function atualizarInterfaceModalPagamento() {
   } else {
     listaEl.innerHTML = pagamentosParciaisVenda.map((p, idx) => `
       <div class="parcial-item-tag mono">
-        <span>${p.forma}${p.bandeira ? ` (${p.bandeira})` : ""}: R$ ${p.valor.toFixed(2)}</span>
+        <span>${esc(p.forma)}${p.bandeira ? ` (${esc(p.bandeira)})` : ""}: R$ ${p.valor.toFixed(2)}</span>
         <button type="button" class="btn btn-secondary btn-sm" style="padding:0.15rem 0.45rem;" onclick="removerPagamentoParcial(${idx})">✕</button>
       </div>
     `).join("");
@@ -1079,7 +1196,7 @@ function atualizarInterfaceModalPagamento() {
 function selecionarFormaPagamento(forma) {
   const totalVenda = calcularTotalVendaCarrinho();
   const totalPago = calcularValorPagoParcialmente();
-  const restante = Math.max(0, totalVenda - totalPago);
+  const restante = r2(Math.max(0, totalVenda - totalPago));
 
   if (restante <= 0.005) return;
 
@@ -1097,10 +1214,10 @@ function voltarParaEscolhaForma() {
 
 function confirmarValorParcial() {
   const inputVal = document.getElementById("input-valor-parcial");
-  const valorDigitado = parseFloat(inputVal.value) || 0;
+  const valorDigitado = r2(parseFloat(inputVal.value) || 0);
   const totalVenda = calcularTotalVendaCarrinho();
   const totalPago = calcularValorPagoParcialmente();
-  const restante = Math.max(0, totalVenda - totalPago);
+  const restante = r2(Math.max(0, totalVenda - totalPago));
 
   if (valorDigitado <= 0 || valorDigitado > restante + 0.005) {
     alert(`Valor inválido. O restante a pagar é R$ ${restante.toFixed(2)}.`);
@@ -1126,9 +1243,9 @@ function confirmarValorParcial() {
 
     document.getElementById("pagamento-titulo-bandeira").textContent = titulo;
     document.getElementById("pagamento-lista-bandeiras").innerHTML = bandeiras.map((bandeira, idx) => `
-      <button type="button" class="btn-pag-opcao" onclick="selecionarBandeiraPagamento('${bandeira}')">
+      <button type="button" class="btn-pag-opcao" onclick="selecionarBandeiraPagamento('${esc(bandeira)}')">
         <span class="tecla-badge mono">${idx + 1}</span>
-        <span>${bandeira}</span>
+        <span>${esc(bandeira)}</span>
       </button>
     `).join("");
 
@@ -1160,15 +1277,14 @@ function finalizarVendaComposta() {
     return;
   }
 
-  const pagamentosFinalizados = [...pagamentosParciaisVenda];
-  const valorBruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
-  const desconto = parseFloat(document.getElementById("input-desconto").value) || 0;
-  const valorFinal = Math.max(0, valorBruto - desconto);
-  const itensVenda = [...carrinho];
+  const pagamentosFinalizados = pagamentosParciaisVenda.map(p => ({ ...p, valor: r2(p.valor) }));
+  const valorBruto = calcularTotalVendaCarrinho();
+  const valorFinal = valorBruto;
+  const itensVenda = carrinho.map(i => ({ ...i, subtotal: r2(i.subtotal) }));
 
   fecharModalPagamento();
 
-  const novoId = gerarProximoId(cacheVendas);
+  const novoId = gerarIdUnico();
   const venda = {
     id: novoId,
     turnoId: turnoAtivo.id,
@@ -1176,7 +1292,7 @@ function finalizarVendaComposta() {
     operadorNome: usuarioLogado.nome,
     dataHora: Date.now(),
     valorBruto,
-    desconto,
+    desconto: 0,
     valorFinal,
     pagamentos: pagamentosFinalizados,
     formaPagamento: pagamentosFinalizados.length === 1 ? pagamentosFinalizados[0].forma : "MISTO",
@@ -1192,8 +1308,8 @@ function finalizarVendaComposta() {
   ultimaVendaObjeto = venda;
 
   document.getElementById("resumo-modal-venda").innerHTML = `
-    <div>Total: R$ ${valorFinal.toFixed(2)}</div>
-    <div style="font-size:0.84rem; color:#e0e7ff; margin-top:0.25rem;">${formatarPagamentoTexto(venda)}</div>
+    <div>Venda #${esc(novoId)} — Total: R$ ${valorFinal.toFixed(2)}</div>
+    <div style="font-size:0.84rem; color:#e0e7ff; margin-top:0.25rem;">${esc(formatarPagamentoTexto(venda))}</div>
   `;
   document.getElementById("modal-pos-venda").classList.add("active");
   document.getElementById("btn-confirmar-impressao").focus();
@@ -1215,7 +1331,7 @@ function confirmarImpressaoPosVenda(desejaImprimir) {
 function podeCancelarVenda(venda) {
   if (!usuarioLogado || venda.status === "CANCELADA") return false;
   if (usuarioLogado.isAdmin) return true;
-  return Boolean(turnoAtivo && venda.turnoId === turnoAtivo.id && venda.usuarioId === usuarioLogado.id);
+  return Boolean(turnoAtivo && mesmoId(venda.turnoId, turnoAtivo.id) && mesmoId(venda.usuarioId, usuarioLogado.id));
 }
 
 function limparFiltrosVendas() {
@@ -1237,17 +1353,23 @@ function carregarAbaVendas() {
   const filtroPag = document.getElementById("filtro-vendas-pagamento")?.value || "TODOS";
   const filtroStatus = document.getElementById("filtro-vendas-status")?.value || "TODAS";
 
-  let vendas = [...cacheVendas]
+  // Data fora da janela em tempo real: busca no banco e redesenha quando chegar
+  if (filtroData) {
+    garantirVendasDoDia(filtroData).then(carregou => { if (carregou) carregarAbaVendas(); });
+  }
+
+  // Sem filtro de data: mostra a janela em tempo real (últimos JANELA_TEMPO_REAL_DIAS dias)
+  let vendas = (filtroData ? todasVendas() : [...cacheVendas])
     .filter(v => {
       if (usuarioLogado.isAdmin) return true;
-      if (v.usuarioId !== usuarioLogado.id) return false;
+      if (!mesmoId(v.usuarioId, usuarioLogado.id)) return false;
       if (v.status === "CANCELADA" && v.constarNoFechamento === false) return false;
       return true;
     })
     .sort((a, b) => b.dataHora - a.dataHora);
 
   if (filtroData) {
-    vendas = vendas.filter(v => new Date(v.dataHora).toISOString().split("T")[0] === filtroData);
+    vendas = vendas.filter(v => dataLocalISO(v.dataHora) === filtroData);
   }
   if (filtroPag !== "TODOS") {
     if (filtroPag === "MISTO") {
@@ -1278,20 +1400,20 @@ function carregarAbaVendas() {
       <div class="venda-card ${cancelada ? "venda-cancelada" : ""}">
         <div style="flex: 1; min-width: 240px;">
           <div class="venda-meta-row">
-            <strong class="mono">#${v.id}</strong>
-            <span class="badge ${cancelada ? "badge-closed" : "badge-open"}">${v.status}</span>
+            <strong class="mono">#${esc(v.id)}</strong>
+            <span class="badge ${cancelada ? "badge-closed" : "badge-open"}">${esc(v.status)}</span>
             ${ocultaNoCaixa && usuarioLogado.isAdmin ? `<span class="badge badge-oculta">Oculta no caixa</span>` : ""}
-            <span class="badge badge-pagamento">${formatarPagamentoTexto(v)}</span>
+            <span class="badge badge-pagamento">${esc(formatarPagamentoTexto(v))}</span>
             <span style="font-size:0.82rem; font-weight:600; color:var(--text-muted);">
-              ${new Date(v.dataHora).toLocaleString("pt-BR")} • ${nomeOperador} (Turno #${v.turnoId})
+              ${new Date(v.dataHora).toLocaleString("pt-BR")} • ${esc(nomeOperador)} (Turno #${esc(v.turnoId)})
             </span>
           </div>
           <div class="venda-itens-texto">
-            ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}
+            ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}
           </div>
           ${cancelada ? `
             <div class="motivo-cancelamento">
-              <i class="ri-close-circle-line"></i> Cancelada por ${v.canceladoPor || "Sistema"} em ${v.dataHoraCancelamento ? new Date(v.dataHoraCancelamento).toLocaleString("pt-BR") : "---"} — Motivo: "${v.motivoCancelamento || "Não informado"}"
+              <i class="ri-close-circle-line"></i> Cancelada por ${esc(v.canceladoPor || "Sistema")} em ${v.dataHoraCancelamento ? new Date(v.dataHoraCancelamento).toLocaleString("pt-BR") : "---"} — Motivo: "${esc(v.motivoCancelamento || "Não informado")}"
             </div>
           ` : ""}
         </div>
@@ -1300,11 +1422,11 @@ function carregarAbaVendas() {
           <strong class="mono venda-valor-texto">
             R$ ${v.valorFinal.toFixed(2)}
           </strong>
-          <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm(${v.id})">
+          <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
             <i class="ri-printer-line"></i> 2ª Via
           </button>
           ${permiteCancelar ? `
-            <button class="btn btn-danger btn-sm" onclick="abrirModalCancelamento(${v.id})">
+            <button class="btn btn-danger btn-sm" onclick="abrirModalCancelamento('${esc(v.id)}')">
               <i class="ri-close-circle-line"></i> Cancelar
             </button>
           ` : ""}
@@ -1315,7 +1437,7 @@ function carregarAbaVendas() {
 }
 
 function abrirModalCancelamento(vendaId) {
-  const v = cacheVendas.find(item => item.id === Number(vendaId));
+  const v = buscarVenda(vendaId);
   if (!v || !podeCancelarVenda(v)) return;
 
   document.getElementById("cancelar-venda-id").value = v.id;
@@ -1343,10 +1465,10 @@ function fecharModalCancelamento() {
 
 function confirmarCancelamentoVenda(e) {
   if (e) e.preventDefault();
-  const vendaId = Number(document.getElementById("cancelar-venda-id").value);
+  const vendaId = document.getElementById("cancelar-venda-id").value;
   const motivo = document.getElementById("cancelar-venda-motivo").value.trim();
 
-  const v = cacheVendas.find(item => item.id === vendaId);
+  const v = buscarVenda(vendaId);
   if (!v || !podeCancelarVenda(v)) {
     fecharModalCancelamento();
     return;
@@ -1356,7 +1478,7 @@ function confirmarCancelamentoVenda(e) {
     ? Boolean(document.getElementById("cancelar-constar-fechamento").checked)
     : true;
 
-  setDoc(doc(db, "vendas", String(vendaId)), {
+  const vendaCancelada = {
     ...v,
     status: "CANCELADA",
     constarNoFechamento,
@@ -1364,7 +1486,15 @@ function confirmarCancelamentoVenda(e) {
     canceladoPor: usuarioLogado.nome,
     canceladoPorAdmin: Boolean(usuarioLogado.isAdmin),
     dataHoraCancelamento: Date.now()
-  });
+  };
+  setDoc(doc(db, "vendas", String(v.id)), vendaCancelada);
+
+  // Vendas fora da janela em tempo real não recebem atualização automática
+  if (vendasAntigas.has(String(v.id))) {
+    vendasAntigas.set(String(v.id), vendaCancelada);
+    carregarAbaVendas();
+    carregarHistoricoTurnos();
+  }
 
   fecharModalCancelamento();
 }
@@ -1380,16 +1510,20 @@ function renderizarDashboard() {
   if (!usuarioLogado?.isAdmin) return;
 
   const filtroData = document.getElementById("filtro-data-dashboard")?.value || "";
-  let vendasConcluidas = cacheVendas.filter(v => v.status === "CONCLUIDA");
 
+  // Data fora da janela em tempo real: busca no banco e redesenha quando chegar
   if (filtroData) {
-    vendasConcluidas = vendasConcluidas.filter(v => {
-      const dataIso = new Date(v.dataHora).toISOString().split("T")[0];
-      return dataIso === filtroData;
-    });
+    garantirVendasDoDia(filtroData).then(carregou => { if (carregou) renderizarDashboard(); });
   }
 
-  const faturamentoTotal = vendasConcluidas.reduce((acc, v) => acc + v.valorFinal, 0);
+  // Sem filtro: últimos JANELA_TEMPO_REAL_DIAS dias
+  let vendasConcluidas = (filtroData ? todasVendas() : cacheVendas).filter(v => v.status === "CONCLUIDA");
+
+  if (filtroData) {
+    vendasConcluidas = vendasConcluidas.filter(v => dataLocalISO(v.dataHora) === filtroData);
+  }
+
+  const faturamentoTotal = r2(vendasConcluidas.reduce((acc, v) => acc + v.valorFinal, 0));
   let totalItensVendidos = 0;
 
   const vendasPorHora = Array(24).fill(0);
@@ -1480,18 +1614,35 @@ function renderizarDashboard() {
 }
 
 // 11. TURNOS INDEPENDENTES POR USUÁRIO
+function obterTurnoAbertoDoUsuario(usuarioId) {
+  // Se houver mais de um aberto (ex.: legado), usa o mais recente
+  return cacheTurnos
+    .filter(t => t.status === "ABERTO" && mesmoId(t.usuarioId, usuarioId))
+    .sort((a, b) => b.dataHoraAbertura - a.dataHoraAbertura)[0] || null;
+}
+
 function verificarTurnoAbertoDoUsuario() {
   if (!usuarioLogado) return;
-  turnoAtivo = cacheTurnos.find(
-    t => t.status === "ABERTO" && t.usuarioId === usuarioLogado.id
-  ) || null;
+  turnoAtivo = obterTurnoAbertoDoUsuario(usuarioLogado.id);
   atualizarStatusTurnoUI();
 }
 
 function abrirTurno(tipoTurno) {
-  if (!usuarioLogado) return;
-  const novoId = gerarProximoId(cacheTurnos);
-  setDoc(doc(db, "turnos", String(novoId)), {
+  if (!usuarioLogado || abrindoTurno) return;
+
+  const turnoExistente = obterTurnoAbertoDoUsuario(usuarioLogado.id);
+  if (turnoExistente) {
+    alert(`Você já possui um turno aberto (${turnoExistente.tipoTurno}). Encerre-o antes de abrir outro.`);
+    turnoAtivo = turnoExistente;
+    atualizarStatusTurnoUI();
+    return;
+  }
+
+  abrindoTurno = true;
+  document.querySelectorAll(".turno-actions button").forEach(b => { b.disabled = true; });
+
+  const novoId = gerarIdUnico();
+  const novoTurno = {
     id: novoId,
     usuarioId: usuarioLogado.id,
     operadorNome: usuarioLogado.nome,
@@ -1499,11 +1650,32 @@ function abrirTurno(tipoTurno) {
     dataHoraAbertura: Date.now(),
     dataHoraFechamento: null,
     status: "ABERTO"
-  });
+  };
+
+  // Ativa localmente na hora, sem esperar a resposta da nuvem
+  turnoAtivo = novoTurno;
+  if (!cacheTurnos.some(t => mesmoId(t.id, novoId))) cacheTurnos.push(novoTurno);
+  atualizarStatusTurnoUI();
+
+  setDoc(doc(db, "turnos", String(novoId)), novoTurno)
+    .catch(erro => console.error("Erro ao abrir turno:", erro))
+    .finally(() => {
+      abrindoTurno = false;
+      document.querySelectorAll(".turno-actions button").forEach(b => { b.disabled = false; });
+    });
 }
 
 function fecharTurnoAtual(modoImpressao = null) {
   if (!turnoAtivo) return;
+
+  const vendasDoTurno = cacheVendas.filter(v => mesmoId(v.turnoId, turnoAtivo.id) && v.status === "CONCLUIDA");
+  const totalDoTurno = r2(vendasDoTurno.reduce((acc, v) => acc + v.valorFinal, 0));
+  const confirmou = confirm(
+    `Encerrar o turno ${turnoAtivo.tipoTurno}?\n\n` +
+    `${vendasDoTurno.length} ${vendasDoTurno.length === 1 ? "venda" : "vendas"} — Total R$ ${totalDoTurno.toFixed(2)}`
+  );
+  if (!confirmou) return;
+
   const turnoFechado = {
     ...turnoAtivo,
     operadorNome: obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome),
@@ -1534,15 +1706,15 @@ function atualizarStatusTurnoUI() {
 
     infoTurno.innerHTML = `
       <p style="margin:0.6rem 0; color:var(--text-muted); font-weight:600;">
-        Operador: <strong style="color:var(--text-main);">${nomeAtual}</strong> |
-        Turno: <strong style="color:var(--text-main);">${turnoAtivo.tipoTurno}</strong> |
+        Operador: <strong style="color:var(--text-main);">${esc(nomeAtual)}</strong> |
+        Turno: <strong style="color:var(--text-main);">${esc(turnoAtivo.tipoTurno)}</strong> |
         Abertura: ${new Date(turnoAtivo.dataHoraAbertura).toLocaleString("pt-BR")}
       </p>
       <div style="display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:0.85rem;">
-        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm(${turnoAtivo.id}, 'vendas')">
+        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'vendas')">
           <i class="ri-printer-line"></i> Parcial (Por Vendas)
         </button>
-        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm(${turnoAtivo.id}, 'produtos')">
+        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'produtos')">
           <i class="ri-list-check-2"></i> Parcial (Por Produtos)
         </button>
         <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('vendas')">
@@ -1566,11 +1738,19 @@ function atualizarStatusTurnoUI() {
 }
 
 // 12. CARRINHO
+// Adiciona pelo ID do produto (nome e preço vêm do catálogo, nunca do HTML)
+function adicionarProdutoPorId(produtoId) {
+  const p = cacheProdutos.find(item => item.id === Number(produtoId) && item.ativo);
+  if (!p) return;
+  const sub = p.subcategoria || "Diversos";
+  adicionarAoCarrinho(p.id, `${p.nome} (${sub})`, p.precoUnitario);
+}
+
 function adicionarAoCarrinho(produtoId, nomeSnapshot, precoUnitarioSnapshot) {
   const itemExistente = carrinho.find(i => i.produtoId === produtoId);
   if (itemExistente) {
     itemExistente.quantidade += 1;
-    itemExistente.subtotal = itemExistente.quantidade * itemExistente.precoUnitarioSnapshot;
+    itemExistente.subtotal = r2(itemExistente.quantidade * itemExistente.precoUnitarioSnapshot);
   } else {
     carrinho.push({
       produtoId,
@@ -1588,15 +1768,13 @@ function alterarQtdItem(index, delta) {
   if (carrinho[index].quantidade <= 0) {
     carrinho.splice(index, 1);
   } else {
-    carrinho[index].subtotal = carrinho[index].quantidade * carrinho[index].precoUnitarioSnapshot;
+    carrinho[index].subtotal = r2(carrinho[index].quantidade * carrinho[index].precoUnitarioSnapshot);
   }
   atualizarCarrinhoUI();
 }
 
 function limparCarrinho() {
   carrinho = [];
-  const inputDesc = document.getElementById("input-desconto");
-  if (inputDesc) inputDesc.value = 0;
   atualizarCarrinhoUI();
 }
 
@@ -1610,7 +1788,7 @@ function atualizarCarrinhoUI() {
     container.innerHTML = carrinho.map((item, idx) => `
       <div class="item-carrinho">
         <div>
-          <strong>${item.nomeSnapshot}</strong>
+          <strong>${esc(item.nomeSnapshot)}</strong>
           <div class="mono" style="font-size:0.84rem; font-weight:700; color:var(--text-muted);">
             ${item.quantidade}x R$ ${item.precoUnitarioSnapshot.toFixed(2)} = R$ ${item.subtotal.toFixed(2)}
           </div>
@@ -1624,12 +1802,8 @@ function atualizarCarrinhoUI() {
     `).join("");
   }
 
-  const bruto = carrinho.reduce((acc, i) => acc + i.subtotal, 0);
-  const desconto = parseFloat(document.getElementById("input-desconto")?.value) || 0;
-  const final = Math.max(0, bruto - desconto);
-
-  document.getElementById("valor-bruto").textContent = `R$ ${bruto.toFixed(2)}`;
-  document.getElementById("valor-final").textContent = `R$ ${final.toFixed(2)}`;
+  const total = calcularTotalVendaCarrinho();
+  document.getElementById("valor-final").textContent = `R$ ${total.toFixed(2)}`;
 }
 
 // 13. HISTÓRICO DE TURNOS
@@ -1638,15 +1812,19 @@ function carregarHistoricoTurnos() {
   const filtroData = document.getElementById("filtro-data").value;
 
   let turnos = [...cacheTurnos]
-    .filter(t => usuarioLogado.isAdmin || t.usuarioId === usuarioLogado.id)
+    .filter(t => usuarioLogado.isAdmin || mesmoId(t.usuarioId, usuarioLogado.id))
     .sort((a, b) => b.dataHoraAbertura - a.dataHoraAbertura);
 
   if (filtroData) {
-    turnos = turnos.filter(t => {
-      const dataIso = new Date(t.dataHoraAbertura).toISOString().split("T")[0];
-      return dataIso === filtroData;
-    });
+    turnos = turnos.filter(t => dataLocalISO(t.dataHoraAbertura) === filtroData);
+    // Turnos antigos: busca as vendas deles no banco e redesenha quando chegarem
+    garantirVendasDosTurnos(turnos).then(carregou => { if (carregou) carregarHistoricoTurnos(); });
+  } else {
+    // Sem filtro: turnos abertos + turnos dos últimos JANELA_TEMPO_REAL_DIAS dias
+    turnos = turnos.filter(t => t.status === "ABERTO" || t.dataHoraAbertura >= LIMITE_JANELA_MS);
   }
+
+  const vendasConhecidas = todasVendas();
 
   const container = document.getElementById("lista-historico-turnos");
   if (!turnos.length) {
@@ -1656,25 +1834,25 @@ function carregarHistoricoTurnos() {
 
   container.innerHTML = turnos.map(t => {
     const nomeOperadorAtual = obterNomePerfil(t.usuarioId, t.operadorNome);
-    const vendasTurno = cacheVendas
-      .filter(v => v.turnoId === t.id && v.status === "CONCLUIDA")
+    const vendasTurno = vendasConhecidas
+      .filter(v => mesmoId(v.turnoId, t.id) && v.status === "CONCLUIDA")
       .sort((a, b) => a.dataHora - b.dataHora);
-    const canceladasVisiveis = cacheVendas.filter(
-      v => v.turnoId === t.id && v.status === "CANCELADA" && v.constarNoFechamento !== false
+    const canceladasVisiveis = vendasConhecidas.filter(
+      v => mesmoId(v.turnoId, t.id) && v.status === "CANCELADA" && v.constarNoFechamento !== false
     );
-    const totalTurno = vendasTurno.reduce((acc, v) => acc + v.valorFinal, 0);
+    const totalTurno = r2(vendasTurno.reduce((acc, v) => acc + v.valorFinal, 0));
 
     const listaVendasHTML = vendasTurno.length
       ? vendasTurno.map(v => `
           <div class="venda-linha">
             <div>
-              <span class="mono">#${v.id} (${new Date(v.dataHora).toLocaleTimeString("pt-BR")})</span>
-              <span class="badge badge-pagamento" style="margin:0 0.3rem;">${formatarPagamentoTexto(v)}</span>
-              ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}
+              <span class="mono">#${esc(v.id)} (${new Date(v.dataHora).toLocaleTimeString("pt-BR")})</span>
+              <span class="badge badge-pagamento" style="margin:0 0.3rem;">${esc(formatarPagamentoTexto(v))}</span>
+              ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}
             </div>
             <div style="display:flex; align-items:center; gap:0.6rem;">
               <strong class="mono" style="color:var(--success-text); font-weight:800;">R$ ${v.valorFinal.toFixed(2)}</strong>
-              <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm(${v.id})">
+              <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
                 <i class="ri-printer-line"></i> 2ª Via
               </button>
             </div>
@@ -1686,10 +1864,10 @@ function carregarHistoricoTurnos() {
       <div class="turno-historico-card">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
           <div>
-            <strong>Turno #${t.id} — ${t.tipoTurno}</strong>
-            <span class="badge ${t.status === 'ABERTO' ? 'badge-open' : 'badge-closed'}">${t.status}</span>
+            <strong>Turno #${esc(t.id)} — ${esc(t.tipoTurno)}</strong>
+            <span class="badge ${t.status === 'ABERTO' ? 'badge-open' : 'badge-closed'}">${esc(t.status)}</span>
             <div style="font-size:0.84rem; font-weight:600; color:var(--text-muted); margin-top:0.25rem;">
-              Operador: <strong style="color:var(--text-main);">${nomeOperadorAtual}</strong> |
+              Operador: <strong style="color:var(--text-main);">${esc(nomeOperadorAtual)}</strong> |
               Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}
               ${t.dataHoraFechamento ? ` | Fim: ${new Date(t.dataHoraFechamento).toLocaleString("pt-BR")}` : ""}
             </div>
@@ -1700,10 +1878,10 @@ function carregarHistoricoTurnos() {
             </div>
           </div>
           <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
-            <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm(${t.id}, 'vendas')">
+            <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'vendas')">
               <i class="ri-printer-cloud-line"></i> Por Vendas
             </button>
-            <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm(${t.id}, 'produtos')">
+            <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'produtos')">
               <i class="ri-list-check-2"></i> Por Produtos
             </button>
           </div>
@@ -1719,8 +1897,8 @@ function carregarHistoricoTurnos() {
 
 // 14. MOTOR DE IMPRESSÃO TÉRMICA 80MM (ELGIN i8)
 function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
-  let v = cacheVendas.find(item => item.id === Number(vendaId));
-  if (!v && ultimaVendaObjeto && ultimaVendaObjeto.id === Number(vendaId)) {
+  let v = buscarVenda(vendaId);
+  if (!v && ultimaVendaObjeto && mesmoId(ultimaVendaObjeto.id, vendaId)) {
     v = ultimaVendaObjeto;
   }
   if (!v) return;
@@ -1730,10 +1908,10 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   area.innerHTML = `
     <div class="cupom-header">
       <h3>CAIXA PETROVIA</h3>
-      <div>COMPROVANTE DE VENDA #${v.id} ${v.status === "CANCELADA" ? "(CANCELADA)" : ""}</div>
-      <div>Operador: ${nomeOperador}</div>
+      <div>COMPROVANTE DE VENDA #${esc(v.id)} ${v.status === "CANCELADA" ? "(CANCELADA)" : ""}</div>
+      <div>Operador: ${esc(nomeOperador)}</div>
       <div>Data: ${new Date(v.dataHora).toLocaleString("pt-BR")}</div>
-      <div>Pgto: ${formatarPagamentoTexto(v)}</div>
+      <div>Pgto: ${esc(formatarPagamentoTexto(v))}</div>
     </div>
 
     <table class="cupom-table">
@@ -1747,7 +1925,7 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
       <tbody>
         ${v.itens.map(i => `
           <tr>
-            <td>${i.nomeSnapshot}</td>
+            <td>${esc(i.nomeSnapshot)}</td>
             <td class="cupom-right">${i.quantidade}x ${i.precoUnitarioSnapshot.toFixed(2)}</td>
             <td class="cupom-right">${i.subtotal.toFixed(2)}</td>
           </tr>
@@ -1756,9 +1934,11 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
     </table>
 
     <div class="cupom-divider"></div>
-    <div>Subtotal Bruto: R$ ${v.valorBruto.toFixed(2)}</div>
-    <div>Desconto: R$ ${v.desconto.toFixed(2)}</div>
-    <div class="cupom-total">TOTAL FINAL: R$ ${v.valorFinal.toFixed(2)}</div>
+    ${v.desconto > 0 ? `
+      <div>Subtotal Bruto: R$ ${v.valorBruto.toFixed(2)}</div>
+      <div>Desconto: R$ ${v.desconto.toFixed(2)}</div>
+    ` : ""}
+    <div class="cupom-total">TOTAL: R$ ${v.valorFinal.toFixed(2)}</div>
 
     <div class="cupom-footer">
       Obrigado pela preferência!
@@ -1769,22 +1949,26 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
   if (callbackPosImpressao) callbackPosImpressao();
 }
 
-function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = null) {
-  const t = turnoOverride || cacheTurnos.find(item => item.id === Number(turnoId));
+async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = null) {
+  const t = turnoOverride || cacheTurnos.find(item => mesmoId(item.id, turnoId));
   if (!t) return;
 
+  // Turno antigo (fora da janela em tempo real): busca as vendas antes de imprimir
+  await garantirVendasDosTurnos([t]);
+
   const nomeOperador = obterNomePerfil(t.usuarioId, t.operadorNome);
-  const vendas = cacheVendas
-    .filter(v => v.turnoId === Number(turnoId) && v.status === "CONCLUIDA")
+  const vendasConhecidas = todasVendas();
+  const vendas = vendasConhecidas
+    .filter(v => mesmoId(v.turnoId, t.id) && v.status === "CONCLUIDA")
     .sort((a, b) => a.dataHora - b.dataHora);
-  const canceladas = cacheVendas.filter(
-    v => v.turnoId === Number(turnoId) && v.status === "CANCELADA" && v.constarNoFechamento !== false
+  const canceladas = vendasConhecidas.filter(
+    v => mesmoId(v.turnoId, t.id) && v.status === "CANCELADA" && v.constarNoFechamento !== false
   );
 
-  const totalBruto = vendas.reduce((acc, v) => acc + v.valorBruto, 0);
-  const totalDescontos = vendas.reduce((acc, v) => acc + v.desconto, 0);
-  const totalLiquido = vendas.reduce((acc, v) => acc + v.valorFinal, 0);
-  const totalCancelado = canceladas.reduce((acc, v) => acc + v.valorFinal, 0);
+  const totalBruto = r2(vendas.reduce((acc, v) => acc + v.valorBruto, 0));
+  const totalDescontos = r2(vendas.reduce((acc, v) => acc + (Number(v.desconto) || 0), 0));
+  const totalLiquido = r2(vendas.reduce((acc, v) => acc + v.valorFinal, 0));
+  const totalCancelado = r2(canceladas.reduce((acc, v) => acc + v.valorFinal, 0));
 
   // Agrupamento financeiro unificado (suportando pagamentos mistos e parciais)
   const resumoPagamentos = {};
@@ -1794,17 +1978,17 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
         const chave = p.forma === "DINHEIRO" || p.forma === "PIX"
           ? p.forma
           : `${p.forma} - ${(p.bandeira || "OUTRA").toUpperCase()}${p.forma === "CREDITO" ? " (1x)" : ""}`;
-        resumoPagamentos[chave] = (resumoPagamentos[chave] || 0) + p.valor;
+        resumoPagamentos[chave] = r2((resumoPagamentos[chave] || 0) + p.valor);
       });
     } else if (v.formaPagamento) {
       const chave = formatarPagamentoTexto(v);
-      resumoPagamentos[chave] = (resumoPagamentos[chave] || 0) + v.valorFinal;
+      resumoPagamentos[chave] = r2((resumoPagamentos[chave] || 0) + v.valorFinal);
     }
   });
 
   const linhasResumoPag = Object.entries(resumoPagamentos)
     .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
-    .map(([label, valor]) => `<div>${label}: R$ ${valor.toFixed(2)}</div>`)
+    .map(([label, valor]) => `<div>${esc(label)}: R$ ${valor.toFixed(2)}</div>`)
     .join("");
 
   // Corpo principal alterna entre "Por Produtos" e "Por Vendas"
@@ -1826,7 +2010,7 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
           mapaProdutos[nome] = { nome, quantidade: 0, total: 0 };
         }
         mapaProdutos[nome].quantidade += qtd;
-        mapaProdutos[nome].total += sub;
+        mapaProdutos[nome].total = r2(mapaProdutos[nome].total + sub);
         totalUnidades += qtd;
       });
     });
@@ -1846,7 +2030,7 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
         <tbody>
           ${listaAgrupada.length ? listaAgrupada.map(p => `
             <tr>
-              <td>${p.nome}</td>
+              <td>${esc(p.nome)}</td>
               <td class="cupom-right">${p.quantidade}x</td>
               <td class="cupom-right">${p.total.toFixed(2)}</td>
             </tr>
@@ -1870,10 +2054,10 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
         <tbody>
           ${vendas.map(v => `
             <tr>
-              <td>${new Date(v.dataHora).toLocaleTimeString("pt-BR")} (#${v.id})</td>
+              <td>${new Date(v.dataHora).toLocaleTimeString("pt-BR")} (#${esc(v.id)})</td>
               <td>
-                ${v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", ")}<br>
-                <small>[${formatarPagamentoTexto(v)}]</small>
+                ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}<br>
+                <small>[${esc(formatarPagamentoTexto(v))}]</small>
               </td>
               <td class="cupom-right">${v.valorFinal.toFixed(2)}</td>
             </tr>
@@ -1887,9 +2071,9 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
   area.innerHTML = `
     <div class="cupom-header">
       <h3>CAIXA PETROVIA</h3>
-      <div>${tituloRelatorio}</div>
-      <div>Turno: ${t.tipoTurno} (${t.status})</div>
-      <div>Operador: ${nomeOperador}</div>
+      <div>${esc(tituloRelatorio)}</div>
+      <div>Turno: ${esc(t.tipoTurno)} (${esc(t.status)})</div>
+      <div>Operador: ${esc(nomeOperador)}</div>
       <div>Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}</div>
       <div>Fim: ${t.dataHoraFechamento ? new Date(t.dataHoraFechamento).toLocaleString("pt-BR") : "Em andamento"}</div>
     </div>
@@ -1902,9 +2086,11 @@ function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverride = nu
 
     <div class="cupom-divider"></div>
     <div>Qtd. Vendas Concluídas: ${vendas.length}</div>
-    <div>Total Bruto: R$ ${totalBruto.toFixed(2)}</div>
-    <div>Total Descontos: R$ ${totalDescontos.toFixed(2)}</div>
-    <div class="cupom-total">TOTAL LÍQUIDO: R$ ${totalLiquido.toFixed(2)}</div>
+    ${totalDescontos > 0 ? `
+      <div>Total Bruto: R$ ${totalBruto.toFixed(2)}</div>
+      <div>Total Descontos: R$ ${totalDescontos.toFixed(2)}</div>
+    ` : ""}
+    <div class="cupom-total">TOTAL DO TURNO: R$ ${totalLiquido.toFixed(2)}</div>
     ${canceladas.length ? `<div style="margin-top:4px; font-size:11px;">Auditoria - Canceladas: ${canceladas.length} (R$ ${totalCancelado.toFixed(2)})</div>` : ""}
 
     <div class="cupom-footer">
@@ -1954,6 +2140,7 @@ Object.assign(window, {
   abrirTurno,
   fecharTurnoAtual,
   adicionarAoCarrinho,
+  adicionarProdutoPorId,
   alterarQtdItem,
   limparCarrinho,
   atualizarCarrinhoUI,
