@@ -1309,7 +1309,7 @@ function finalizarVendaComposta() {
 
   document.getElementById("resumo-modal-venda").innerHTML = `
     <div>Venda #${esc(novoId)} — Total: R$ ${valorFinal.toFixed(2)}</div>
-    <div style="font-size:0.84rem; color:#e0e7ff; margin-top:0.25rem;">${esc(formatarPagamentoTexto(venda))}</div>
+    <div class="resumo-modal-pagamento">${esc(formatarPagamentoTexto(venda))}</div>
   `;
   document.getElementById("modal-pos-venda").classList.add("active");
   document.getElementById("btn-confirmar-impressao").focus();
@@ -1499,7 +1499,7 @@ function confirmarCancelamentoVenda(e) {
   fecharModalCancelamento();
 }
 
-// 10. DASHBOARD ANALÍTICO (PALETA SAAS ROXO & VERDE-ÁGUA)
+// 10. DASHBOARD ANALÍTICO (TEMA ESCURO)
 function limparFiltroDashboard() {
   const inputData = document.getElementById("filtro-data-dashboard");
   if (inputData) inputData.value = "";
@@ -1556,8 +1556,9 @@ function renderizarDashboard() {
 
   if (typeof Chart === "undefined") return;
 
-  Chart.defaults.color = "#475569";
-  Chart.defaults.borderColor = "#e2e8f0";
+  Chart.defaults.color = "#8b93a1";
+  Chart.defaults.borderColor = "rgba(255, 255, 255, 0.07)";
+  Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
 
   const ctxPicos = document.getElementById("chart-picos")?.getContext("2d");
   if (ctxPicos) {
@@ -1569,9 +1570,9 @@ function renderizarDashboard() {
         datasets: [{
           label: "Vendas no Horário",
           data: vendasPorHora,
-          backgroundColor: "#5b46f6",
-          hoverBackgroundColor: "#4338ca",
-          borderColor: "#4338ca",
+          backgroundColor: "#7c83ff",
+          hoverBackgroundColor: "#9197ff",
+          borderColor: "#7c83ff",
           borderWidth: 0,
           borderRadius: 6
         }]
@@ -1595,9 +1596,9 @@ function renderizarDashboard() {
         datasets: [{
           label: "Unidades Vendidas",
           data: top10.length ? top10.map(item => item[1]) : [0],
-          backgroundColor: "#059669",
-          hoverBackgroundColor: "#047857",
-          borderColor: "#047857",
+          backgroundColor: "#34d399",
+          hoverBackgroundColor: "#6ee7b7",
+          borderColor: "#34d399",
           borderWidth: 0,
           borderRadius: 6
         }]
