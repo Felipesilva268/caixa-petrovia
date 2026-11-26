@@ -87,6 +87,47 @@ const turnosAntigosCarregados = new Set();
 
 let abrindoTurno = false;
 
+// Login só é validado depois que usuários e senha master chegaram da nuvem
+// (antes disso, toda senha parecia "inválida" porque a lista ainda estava vazia)
+const estadoCarga = { usuarios: false, master: false };
+let senhaPendente = null;
+let timerSemConexao = null;
+
+function dadosDeLoginProntos() {
+  return estadoCarga.usuarios && estadoCarga.master;
+}
+
+function marcarCarregado(chave, snapshot) {
+  // Cache local vazio não conta: espera a resposta do servidor
+  if (snapshot.metadata.fromCache && snapshot.empty) return;
+  estadoCarga[chave] = true;
+  if (dadosDeLoginProntos() && senhaPendente !== null) {
+    const input = document.getElementById("input-senha-acesso");
+    if (input) input.value = senhaPendente;
+    senhaPendente = null;
+    autenticarOperador();
+  }
+}
+
+function mostrarCarregandoLogin(texto = null, alerta = false) {
+  const el = document.getElementById("msg-carregando-login");
+  if (!el) return;
+  document.getElementById("msg-carregando-texto").textContent =
+    texto || "Carregando dados do caixa… você entra automaticamente.";
+  el.classList.toggle("alerta", alerta);
+  el.classList.remove("hidden");
+}
+
+function esconderCarregandoLogin() {
+  document.getElementById("msg-carregando-login")?.classList.add("hidden");
+  clearTimeout(timerSemConexao);
+}
+
+function avisarFalhaDeCarga(erro) {
+  console.error("Erro ao carregar dados de login:", erro);
+  mostrarCarregandoLogin("Não foi possível carregar os usuários. Verifique a internet e recarregue a página (F5).", true);
+}
+
 // Escapa texto antes de inserir via innerHTML (proteção contra XSS)
 function esc(valor) {
   return String(valor ?? "")
@@ -235,7 +276,9 @@ function iniciarSincronizacaoFirebase() {
         preencherCamposMaster();
       }
     }
-  });
+    // Por último: a senha master já está atualizada quando o login pendente rodar
+    marcarCarregado("master", snapshot);
+  }, avisarFalhaDeCarga);
 
   onSnapshot(collection(db, "usuarios"), (snapshot) => {
     cacheUsuarios = snapshot.docs.map(d => d.data());
@@ -252,7 +295,8 @@ function iniciarSincronizacaoFirebase() {
       carregarHistoricoTurnos();
       carregarAbaVendas();
     }
-  });
+    marcarCarregado("usuarios", snapshot);
+  }, avisarFalhaDeCarga);
 
   onSnapshot(collection(db, "produtos"), (snapshot) => {
     cacheProdutos = snapshot.docs.map(d => d.data());
@@ -539,6 +583,22 @@ function autenticarOperador(e) {
   const input = document.getElementById("input-senha-acesso");
   const senhaDigitada = input.value.trim();
   const msgErro = document.getElementById("msg-erro-login");
+  if (!senhaDigitada) return;
+
+  // Dados ainda chegando: guarda a senha e entra sozinho quando carregar
+  if (!dadosDeLoginProntos()) {
+    senhaPendente = senhaDigitada;
+    msgErro.classList.add("hidden");
+    mostrarCarregandoLogin();
+    clearTimeout(timerSemConexao);
+    timerSemConexao = setTimeout(() => {
+      if (senhaPendente !== null) {
+        mostrarCarregandoLogin("Ainda carregando… a conexão com a nuvem está lenta. Aguarde ou verifique a internet.", true);
+      }
+    }, 15000);
+    return;
+  }
+  esconderCarregandoLogin();
 
   if (senhaDigitada === configMaster.senha) {
     usuarioLogado = { id: "admin", nome: configMaster.nome, isAdmin: true };

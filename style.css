@@ -185,6 +185,24 @@ button { font: inherit; }
   font-size: 0.94rem;
 }
 
+.info-msg {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-top: 0.85rem;
+}
+
+.info-msg.alerta { color: var(--warning); }
+
+.info-msg .ri-loader-4-line {
+  display: inline-block;
+  animation: girar 0.9s linear infinite;
+}
+
+.info-msg.alerta .ri-loader-4-line { animation: none; }
+
+@keyframes girar { to { transform: rotate(360deg); } }
+
 .erro-msg {
   color: var(--danger);
   font-size: 0.875rem;

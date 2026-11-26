@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20261126">
 </head>
 <body>
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
@@ -38,6 +38,10 @@
 
       <p id="msg-erro-login" class="erro-msg hidden">
         <i class="ri-error-warning-line"></i> Senha inválida. Tente novamente.
+      </p>
+
+      <p id="msg-carregando-login" class="info-msg hidden">
+        <i class="ri-loader-4-line"></i> <span id="msg-carregando-texto">Carregando dados do caixa… você entra automaticamente.</span>
       </p>
     </div>
   </div>
@@ -525,6 +529,6 @@
   <div id="area-impressao" class="print-only"></div>
 
   <!-- MOTOR COM FIREBASE INTEGRADO -->
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20261126"></script>
 </body>
 </html>
