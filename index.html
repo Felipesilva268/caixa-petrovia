@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#f4f5f8">
   <title>Caixa Petrovia — PDV</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f56d6'/%3E%3Cpath d='M18 15h17a3 3 0 0 1 3 3v31H15V18a3 3 0 0 1 3-3zm2 5v9h13v-9z' fill='white'/%3E%3Cpath d='M38 25l7 5v13a3 3 0 0 0 6 0V23l-5-5' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <script>
     // Aplica o tema salvo antes de desenhar a página (evita piscar o tema errado)
     try {
@@ -19,11 +20,16 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <link rel="stylesheet" href="style.css?v=20261126-2">
+  <link rel="stylesheet" href="style.css?v=20261126-3">
 </head>
 <body>
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
   <div id="modal-bloqueio" class="modal-overlay active no-print">
+    <div class="bloqueio-wrap">
+    <div class="bloqueio-relogio" aria-live="off">
+      <strong id="relogio-hora" class="mono">--:--</strong>
+      <span id="relogio-data"></span>
+    </div>
     <div class="modal-card">
       <div class="logo-icon modal-logo">
         <i class="ri-gas-station-fill"></i>
@@ -53,6 +59,11 @@
       <p id="msg-carregando-login" class="info-msg hidden">
         <i class="ri-loader-4-line"></i> <span id="msg-carregando-texto">Carregando dados do caixa… você entra automaticamente.</span>
       </p>
+    </div>
+    <div class="bloqueio-rodape">
+      <span class="marca-rodape"><i class="ri-gas-station-line"></i> Caixa Petrovia</span>
+      <span id="status-nuvem-bloqueio" class="status-nuvem"><span class="status-ponto"></span><span class="status-texto">Conectando…</span></span>
+    </div>
     </div>
   </div>
 
@@ -242,7 +253,7 @@
 
     <div class="top-actions">
       <span id="status-nuvem" class="status-nuvem" title="Conectando à nuvem">
-        <span class="status-ponto"></span><span id="status-nuvem-texto">Conectando…</span>
+        <span class="status-ponto"></span><span id="status-nuvem-texto" class="status-texto">Conectando…</span>
       </span>
       <span id="badge-operador" class="badge badge-user">
         <i class="ri-user-3-line"></i> ---
@@ -381,6 +392,7 @@
           </div>
         </div>
 
+        <div id="resumo-vendas" class="resumo-barra"></div>
         <div id="lista-vendas-registradas" class="tabela-lista"></div>
       </div>
     </section>
@@ -457,6 +469,10 @@
         <div class="panel-header" style="margin-bottom: 1rem;">
           <h2><i class="ri-archive-line"></i> Produtos ativos</h2>
           <div class="catalogo-controles">
+            <div class="busca-wrap busca-lista">
+              <i class="ri-search-line"></i>
+              <input type="text" id="busca-cadastro" placeholder="Buscar por nome ou código" oninput="carregarProdutos()" aria-label="Buscar produto na lista" autocomplete="off">
+            </div>
             <select id="filtro-cat-cadastro" onchange="carregarProdutos()" aria-label="Filtrar por categoria">
               <option value="TODAS">Todas as categorias</option>
             </select>
@@ -498,6 +514,10 @@
             <strong id="kpi-qtd-vendas" class="mono">0</strong>
           </div>
           <div class="kpi-card kpi-blue">
+            <span>Ticket médio</span>
+            <strong id="kpi-ticket-medio" class="mono">R$ 0,00</strong>
+          </div>
+          <div class="kpi-card kpi-cinza">
             <span>Itens vendidos</span>
             <strong id="kpi-itens-vendidos" class="mono">0</strong>
           </div>
@@ -509,7 +529,7 @@
       </div>
 
       <div class="dashboard-grid">
-        <div class="card">
+        <div class="card card-largo">
           <h2><i class="ri-time-line"></i> Vendas por hora (00h às 23h)</h2>
           <p class="card-desc">Horários de maior movimento na conveniência e na pista.</p>
           <div class="chart-container">
@@ -524,6 +544,14 @@
             <canvas id="chart-produtos"></canvas>
           </div>
         </div>
+
+        <div class="card">
+          <h2><i class="ri-wallet-3-line"></i> Formas de pagamento</h2>
+          <p class="card-desc">Quanto entrou por forma de pagamento no período.</p>
+          <div class="chart-container">
+            <canvas id="chart-formas"></canvas>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -533,8 +561,17 @@
         <h2><i class="ri-shield-user-line"></i> Meu perfil de administrador</h2>
         <p class="card-desc">Altere seu nome de exibição e sua senha Master. Seus turnos e registros permanecem intactos.</p>
         <form id="form-admin-master" onsubmit="salvarConfigMaster(event)" class="form-grid form-admin">
-          <input type="text" id="admin-nome" placeholder="Nome do administrador" aria-label="Nome do administrador" required>
-          <input type="text" id="admin-senha" class="mono" placeholder="Nova senha Master" aria-label="Nova senha Master" required>
+          <div class="field-group">
+            <label for="admin-nome">Nome de exibição</label>
+            <input type="text" id="admin-nome" placeholder="Nome do administrador" required>
+          </div>
+          <div class="field-group">
+            <label for="admin-senha">Senha Master</label>
+            <div class="campo-senha">
+              <input type="password" id="admin-senha" class="mono" placeholder="Nova senha Master" autocomplete="off" required>
+              <button type="button" class="icon-btn" onclick="alternarCampoSenha('admin-senha', this)" aria-label="Mostrar senha" title="Mostrar senha"><i class="ri-eye-line"></i></button>
+            </div>
+          </div>
           <button type="submit" class="btn btn-primary">
             <i class="ri-key-2-line"></i> Atualizar senha Master
           </button>
@@ -571,8 +608,17 @@
         <p class="card-desc">A edição de nome ou senha mantém o mesmo ID do operador, preservando todos os turnos e vendas do perfil.</p>
         <form id="form-operador" onsubmit="salvarOperador(event)" class="form-grid form-admin">
           <input type="hidden" id="op-id-edicao" value="">
-          <input type="text" id="op-nome" placeholder="Nome do frentista / operador" aria-label="Nome do operador" required>
-          <input type="text" id="op-senha" class="mono" placeholder="Senha exclusiva (ex: 1020)" aria-label="Senha do operador" required>
+          <div class="field-group">
+            <label for="op-nome">Nome</label>
+            <input type="text" id="op-nome" placeholder="Nome do frentista / operador" required>
+          </div>
+          <div class="field-group">
+            <label for="op-senha">Senha exclusiva</label>
+            <div class="campo-senha">
+              <input type="password" id="op-senha" class="mono" placeholder="Ex: 1020" autocomplete="off" required>
+              <button type="button" class="icon-btn" onclick="alternarCampoSenha('op-senha', this)" aria-label="Mostrar senha" title="Mostrar senha"><i class="ri-eye-line"></i></button>
+            </div>
+          </div>
           <div class="acoes-linha">
             <button type="submit" id="btn-submit-operador" class="btn btn-success">
               <i class="ri-user-follow-line"></i> Cadastrar operador
@@ -620,6 +666,6 @@
   <div id="area-impressao" class="print-only"></div>
 
   <!-- MOTOR COM FIREBASE INTEGRADO -->
-  <script type="module" src="app.js?v=20261126-2"></script>
+  <script type="module" src="app.js?v=20261126-3"></script>
 </body>
 </html>
