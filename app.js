@@ -59,6 +59,7 @@ let pagamentosParciaisVenda = [];
 
 let chartInstanciaPicos = null;
 let chartInstanciaProdutos = null;
+let chartInstanciaFormas = null;
 
 // Configuração do PDV (salva na nuvem em configuracoes/pdv) e estado da operação
 let configPDV = { bloquearAposVenda: true, bloqueioInatividadeMin: 0, favoritos: [] };
@@ -412,6 +413,167 @@ function limparBusca() {
   carregarProdutos();
 }
 
+// Hora curta (05:32) e data curta (26/11 05:32)
+function formatarHora(timestamp) {
+  return new Date(timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatarDataCurta(timestamp) {
+  const d = new Date(timestamp);
+  return `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${formatarHora(timestamp)}`;
+}
+
+// "Hoje · 26/11", "Ontem · 25/11" ou "Terça-feira · 24/11"
+function rotuloDia(dataISO) {
+  const hoje = dataLocalISO(Date.now());
+  const ontem = dataLocalISO(Date.now() - 864e5);
+  const d = new Date(`${dataISO}T12:00:00`);
+  const dia = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  if (dataISO === hoje) return `Hoje · ${dia}`;
+  if (dataISO === ontem) return `Ontem · ${dia}`;
+  const semana = d.toLocaleDateString("pt-BR", { weekday: "long" });
+  return `${semana.charAt(0).toUpperCase()}${semana.slice(1)} · ${dia}`;
+}
+
+function duracaoTexto(ms) {
+  const minutos = Math.max(0, Math.floor(ms / 60000));
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  return h ? `${h}h ${String(m).padStart(2, "0")}min` : `${m} min`;
+}
+
+const ICONE_FORMA = {
+  DINHEIRO: "ri-money-dollar-circle-line",
+  PIX: "ri-qr-code-line",
+  CREDITO: "ri-bank-card-fill",
+  DEBITO: "ri-bank-card-2-line"
+};
+const ROTULO_FORMA = { DINHEIRO: "Dinheiro", PIX: "PIX", CREDITO: "Crédito", DEBITO: "Débito" };
+
+// Pagamentos de uma venda (vendas antigas guardavam só a forma principal)
+function pagamentosDaVenda(v) {
+  if (Array.isArray(v.pagamentos) && v.pagamentos.length) return v.pagamentos;
+  if (v.formaPagamento) return [{ forma: v.formaPagamento, bandeira: v.bandeira || null, valor: v.valorFinal }];
+  return [];
+}
+
+// Números de um conjunto de vendas: quantidade, total, ticket médio e total por forma
+function resumoDasVendas(vendas) {
+  const concluidas = vendas.filter(v => v.status === "CONCLUIDA");
+  const total = r2(concluidas.reduce((acc, v) => acc + (Number(v.valorFinal) || 0), 0));
+  const porForma = { DINHEIRO: 0, PIX: 0, CREDITO: 0, DEBITO: 0 };
+  concluidas.forEach(v => pagamentosDaVenda(v).forEach(p => {
+    if (porForma[p.forma] !== undefined) porForma[p.forma] = r2(porForma[p.forma] + (Number(p.valor) || 0));
+  }));
+  return {
+    qtd: concluidas.length,
+    total,
+    ticket: concluidas.length ? r2(total / concluidas.length) : 0,
+    canceladas: vendas.filter(v => v.status === "CANCELADA").length,
+    porForma
+  };
+}
+
+// Chips de pagamento com ícone: "Dinheiro", "Crédito Visa", ou cada parte do pagamento dividido com o valor
+function chipsPagamentoHTML(v) {
+  const pagamentos = pagamentosDaVenda(v);
+  if (!pagamentos.length) return `<span class="chip-pag">Não informado</span>`;
+  const varios = pagamentos.length > 1;
+  return pagamentos.map(p => {
+    const rotulo = `${ROTULO_FORMA[p.forma] || p.forma}${p.bandeira ? ` ${p.bandeira}` : ""}`;
+    const valor = varios ? ` <b class="mono">${fmt(p.valor)}</b>` : "";
+    const troco = Number(p.troco) > 0 ? ` <span class="troco-chip">troco ${fmt(p.troco)}</span>` : "";
+    const classe = `pag-${String(p.forma || "").toLowerCase()}`;
+    return `<span class="chip-pag ${classe}"><i class="${ICONE_FORMA[p.forma] || "ri-wallet-3-line"}"></i>${esc(rotulo)}${valor}${troco}</span>`;
+  }).join("");
+}
+
+// "MANHÃ (06h-14h)": o horário some no celular para caber no topo
+function rotuloTurnoHTML(tipoTurno) {
+  const texto = String(tipoTurno || "");
+  const i = texto.indexOf(" (");
+  if (i < 0) return esc(texto);
+  return `${esc(texto.slice(0, i))}<span class="turno-horario">${esc(texto.slice(i))}</span>`;
+}
+
+// Mostrar/esconder senha nos formulários do Admin
+function alternarCampoSenha(id, botao) {
+  const campo = document.getElementById(id);
+  if (!campo) return;
+  const mostrar = campo.type === "password";
+  campo.type = mostrar ? "text" : "password";
+  const rotulo = mostrar ? "Esconder senha" : "Mostrar senha";
+  botao.innerHTML = mostrar ? '<i class="ri-eye-off-line"></i>' : '<i class="ri-eye-line"></i>';
+  botao.title = rotulo;
+  botao.setAttribute("aria-label", rotulo);
+}
+
+function esconderCampoSenha(id) {
+  const campo = document.getElementById(id);
+  if (!campo || campo.type === "password") return;
+  const botao = campo.parentElement?.querySelector(".icon-btn");
+  if (botao) alternarCampoSenha(id, botao);
+  else campo.type = "password";
+}
+
+// Na lista de operadores a senha fica escondida até alguém pedir para ver
+function mostrarSenhaOperador(id, botao) {
+  const op = cacheUsuarios.find(u => u.id === Number(id));
+  const alvo = botao.closest(".linha-operador")?.querySelector(".senha-valor");
+  if (!op || !alvo) return;
+  const visivel = alvo.dataset.visivel === "1";
+  alvo.textContent = visivel ? "••••" : op.senha;
+  alvo.dataset.visivel = visivel ? "0" : "1";
+  const rotulo = visivel ? "Mostrar senha" : "Esconder senha";
+  botao.innerHTML = visivel ? '<i class="ri-eye-line"></i>' : '<i class="ri-eye-off-line"></i>';
+  botao.title = rotulo;
+  botao.setAttribute("aria-label", rotulo);
+}
+
+// Categorias que não cabem na linha: degradê na borda e roda do mouse rola para o lado
+function atualizarFadePills() {
+  document.querySelectorAll(".pills-bar").forEach(barra => {
+    const temMais = barra.scrollWidth > barra.clientWidth + 2;
+    barra.classList.toggle("fade-dir", temMais && barra.scrollLeft + barra.clientWidth < barra.scrollWidth - 2);
+    barra.classList.toggle("fade-esq", temMais && barra.scrollLeft > 2);
+  });
+}
+
+function instalarRolagemPills() {
+  document.querySelectorAll(".pills-bar").forEach(barra => {
+    barra.addEventListener("scroll", atualizarFadePills, { passive: true });
+    barra.addEventListener("wheel", e => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && barra.scrollWidth > barra.clientWidth) {
+        barra.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }
+    }, { passive: false });
+  });
+  window.addEventListener("resize", atualizarFadePills);
+}
+
+// Relógio e data na tela de bloqueio
+function iniciarRelogio() {
+  const atualizar = () => {
+    const agora = new Date();
+    const hora = document.getElementById("relogio-hora");
+    const data = document.getElementById("relogio-data");
+    if (hora) hora.textContent = agora.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    if (data) {
+      const texto = agora.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+      data.textContent = texto.charAt(0).toUpperCase() + texto.slice(1);
+    }
+  };
+  atualizar();
+  setInterval(atualizar, 15000);
+}
+
+// Turnos do histórico que o usuário abriu ou fechou (para manter ao atualizar a lista)
+const estadoTurnoHistorico = new Map();
+function registrarTurnoAberto(id, aberto) {
+  estadoTurnoHistorico.set(String(id), Boolean(aberto));
+}
+
 // Notas sugeridas a partir do valor que falta: próximo múltiplo de 5 e de 10 e as notas acima dele
 function sugerirNotas(valor) {
   const acima = multiplo => Math.ceil((valor + 0.001) / multiplo) * multiplo;
@@ -593,6 +755,7 @@ function iniciarSincronizacaoFirebase() {
 
   onSnapshot(collection(db, "turnos"), (snapshot) => {
     cacheTurnos = snapshot.docs.map(d => d.data());
+    if (usuarioLogado?.isAdmin) carregarOperadores();
     if (usuarioLogado) {
       verificarTurnoAbertoDoUsuario();
       carregarHistoricoTurnos();
@@ -605,6 +768,7 @@ function iniciarSincronizacaoFirebase() {
     cacheVendas = snapshot.docs.map(d => d.data());
     if (usuarioLogado) {
       renderizarFaixaMaisVendidos();
+      renderizarInfoTurno();
       carregarHistoricoTurnos();
       carregarAbaVendas();
       if (document.getElementById("tela-dashboard")?.classList.contains("active")) {
@@ -620,6 +784,8 @@ atualizarBotaoSom();
 atualizarCarrinhoUI();
 iniciarSincronizacaoFirebase();
 iniciarStatusNuvem();
+iniciarRelogio();
+instalarRolagemPills();
 focarInputSenha();
 ["pointerdown", "touchstart"].forEach(evento =>
   window.addEventListener(evento, reiniciarTimerInatividade, { passive: true })
@@ -1065,6 +1231,7 @@ function salvarConfigMaster(e) {
     senha: novaSenha
   });
 
+  esconderCampoSenha("admin-senha");
   avisar("Perfil e senha Master atualizados.", { tipo: "sucesso" });
 }
 
@@ -1085,6 +1252,7 @@ function prepararEdicaoOperador(id) {
 function cancelarEdicaoOperador() {
   const form = document.getElementById("form-operador");
   if (form) form.reset();
+  esconderCampoSenha("op-senha");
   const idInput = document.getElementById("op-id-edicao");
   if (idInput) idInput.value = "";
 
@@ -1157,20 +1325,27 @@ async function removerOperador(id) {
 
 function carregarOperadores() {
   const container = document.getElementById("lista-operadores");
+  if (!container) return;
   const operadores = [...cacheUsuarios].sort((a, b) => a.id - b.id);
 
   if (!operadores.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem;">Nenhum operador cadastrado.</p>`;
+    container.innerHTML = `<p class="vazio-texto">Nenhum operador cadastrado.</p>`;
     return;
   }
 
+  const comTurnoAberto = new Set(cacheTurnos.filter(t => t.status === "ABERTO").map(t => String(t.usuarioId)));
   container.innerHTML = operadores.map(op => `
-    <div class="item-carrinho">
-      <div>
+    <div class="linha-operador">
+      <span class="avatar" aria-hidden="true">${esc((op.nome || "?").trim().charAt(0).toUpperCase())}</span>
+      <div class="linha-operador-info">
         <strong>${esc(op.nome)}</strong>
-        <div class="mono" style="font-size:0.82rem; color:var(--text-muted);">Senha: ${esc(op.senha)} | ID Fixo: #${esc(op.id)}</div>
+        <span class="texto-suave">
+          ID #${esc(op.id)} · Senha <span class="senha-valor mono" data-visivel="0">••••</span>
+          <button type="button" class="link-btn" onclick="mostrarSenhaOperador(${Number(op.id)}, this)" title="Mostrar senha" aria-label="Mostrar senha"><i class="ri-eye-line"></i></button>
+        </span>
       </div>
-      <div style="display:flex; gap:0.4rem;">
+      ${comTurnoAberto.has(String(op.id)) ? `<span class="badge badge-open">Turno aberto</span>` : ""}
+      <div class="acoes-linha">
         <button class="btn btn-secondary btn-sm" onclick="prepararEdicaoOperador(${Number(op.id)})">
           <i class="ri-edit-line"></i> Editar
         </button>
@@ -1284,6 +1459,7 @@ function renderizarFiltrosCategoriaPDV() {
   } else {
     barraSub.classList.add("hidden");
   }
+  requestAnimationFrame(atualizarFadePills);
 }
 
 function ordenarListaProdutos(lista, criterio) {
@@ -1308,7 +1484,7 @@ function cardProdutoHTML(p, comCategoria = true) {
   const rotulo = comCategoria ? `${NOME_CURTO_CATEGORIA[categoria] || categoria} · ${sub}` : sub;
   return `
     <div class="produto-card ${classeCategoria(categoria)}" onclick="adicionarProdutoPorId(${Number(p.id)})" title="${esc(categoria)} · ${esc(sub)}">
-      <span class="prod-cat-tag">${esc(rotulo)}</span>
+      <span class="prod-cat-tag"><span class="rotulo-cat">${esc(rotulo)}</span></span>
       <strong>${esc(p.nome)}</strong>
       <span class="preco-tag">${fmt(p.precoUnitario)}</span>
     </div>
@@ -1412,8 +1588,11 @@ function carregarProdutos() {
 
   renderizarGradePDV(filtradosPDV, criterioOrdemPDV);
 
+  const termoCadastro = semAcento(document.getElementById("busca-cadastro")?.value || "").trim();
   const filtradosCadastro = todosAtivos.filter(p =>
-    filtroCatCadastro === "TODAS" || p.categoria === filtroCatCadastro
+    (filtroCatCadastro === "TODAS" || p.categoria === filtroCatCadastro) &&
+    (!termoCadastro || semAcento(p.nome).includes(termoCadastro) ||
+      (p.codigoInterno && semAcento(p.codigoInterno).includes(termoCadastro)))
   );
 
   renderizarListaCadastro(filtradosCadastro, criterioOrdemCadastro);
@@ -1450,52 +1629,42 @@ function renderizarGradePDV(produtos, criterioOrdem) {
     ...new Set(produtos.map(p => p.categoria).filter(c => !MAPA_CATEGORIAS[c]))
   ];
 
-  const secoesHTML = ordemCategorias.map(categoria => {
-    const produtosDaCategoria = produtos.filter(p => p.categoria === categoria);
-    if (!produtosDaCategoria.length) return "";
+  container.innerHTML = ordemCategorias.map(categoria => {
+    const daCategoria = produtos.filter(p => p.categoria === categoria);
+    if (!daCategoria.length) return "";
 
-    const subcategoriasPadrao = MAPA_CATEGORIAS[categoria] || [];
-    const subcategoriasExtras = [...new Set(produtosDaCategoria.map(p => p.subcategoria))]
-      .filter(s => !subcategoriasPadrao.includes(s));
-    const ordemSubcategorias = [...subcategoriasPadrao, ...subcategoriasExtras];
+    // Em ordem de nome, os produtos ficam juntos por embalagem (Latinha, Latão, Long...)
+    const ordemEmbalagens = MAPA_CATEGORIAS[categoria] || [];
+    const posicao = sub => {
+      const i = ordemEmbalagens.indexOf(sub);
+      return i < 0 ? ordemEmbalagens.length : i;
+    };
+    const ordenados = ordenarListaProdutos(daCategoria, criterioOrdem);
+    if (String(criterioOrdem).startsWith("nome")) {
+      ordenados.sort((a, b) => posicao(a.subcategoria) - posicao(b.subcategoria));
+    }
 
-    const blocosSubcategoriaHTML = ordemSubcategorias.map(sub => {
-      const itensSub = ordenarListaProdutos(
-        produtosDaCategoria.filter(p => p.subcategoria === sub),
-        criterioOrdem
-      );
-      if (!itensSub.length) return "";
-
-      return `
-        <div class="subcategoria-bloco">
-          <div class="subcategoria-titulo">${esc(sub)}</div>
-          <div class="produtos-grid">${itensSub.map(p => cardProdutoHTML(p, false)).join("")}</div>
-        </div>
-      `;
-    }).join("");
-
-    const n = produtosDaCategoria.length;
+    const n = daCategoria.length;
     return `
-      <div class="catalogo-secao ${classeCategoria(categoria)}">
+      <section class="catalogo-secao ${classeCategoria(categoria)}">
         <div class="catalogo-secao-header">
           <h3><span class="ponto-cat"></span> ${esc(categoria)}</h3>
           <span class="badge badge-user">${n} ${n === 1 ? "item" : "itens"}</span>
         </div>
         <div class="catalogo-secao-body">
-          ${blocosSubcategoriaHTML}
+          <div class="produtos-grid">${ordenados.map(p => cardProdutoHTML(p, false)).join("")}</div>
         </div>
-      </div>
+      </section>
     `;
   }).join("");
 
-  container.innerHTML = secoesHTML;
   if (indiceFocoPDV >= 0) atualizarDestaqueCardPDV();
 }
 
 function renderizarListaCadastro(produtos, criterioOrdem) {
   const container = document.getElementById("lista-produtos-cadastro");
   if (!produtos.length) {
-    container.innerHTML = `<p class="vazio-texto">Nenhum produto cadastrado nesta categoria.</p>`;
+    container.innerHTML = `<p class="vazio-texto">Nenhum produto encontrado com esse filtro.</p>`;
     return;
   }
 
@@ -1520,9 +1689,7 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
         <div>
           <span class="prod-cat-tag">${esc(p.subcategoria)}</span>
           <strong>${esc(p.nome)}</strong> ${p.codigoInterno ? `<small class="mono esc-hint">[${esc(p.codigoInterno)}]</small>` : ""}
-          <div class="mono" style="color:var(--price); font-size:0.95rem; font-weight:750; margin-top:0.15rem;">
-            ${fmt(p.precoUnitario)}
-          </div>
+          <div class="preco-lista mono">${fmt(p.precoUnitario)}</div>
         </div>
         <div class="acoes-linha">
           <button type="button" class="btn-estrela ${favorito ? "ativa" : ""}" onclick="alternarFavorito(${Number(p.id)})" title="${rotuloEstrela}" aria-label="${rotuloEstrela}" aria-pressed="${favorito}">
@@ -1538,7 +1705,7 @@ function renderizarListaCadastro(produtos, criterioOrdem) {
     }).join("");
 
     return `
-      <div class="catalogo-secao ${classeCategoria(categoria)}" style="margin-bottom: 1rem;">
+      <div class="catalogo-secao ${classeCategoria(categoria)}">
         <div class="catalogo-secao-header">
           <h3><span class="ponto-cat"></span> ${esc(categoria)}</h3>
           <span class="badge badge-user">${itensCat.length}</span>
@@ -1967,55 +2134,90 @@ function carregarAbaVendas() {
     vendas = vendas.filter(v => v.status === filtroStatus);
   }
 
+  // Resumo do que está na tela
+  const resumo = resumoDasVendas(vendas);
+  const resumoEl = document.getElementById("resumo-vendas");
+  if (resumoEl) {
+    const formas = Object.entries(resumo.porForma).filter(([, valor]) => valor > 0);
+    resumoEl.innerHTML = vendas.length ? `
+      <div class="resumo-item"><span>Vendas</span><strong class="mono">${resumo.qtd}</strong></div>
+      <div class="resumo-item"><span>Total</span><strong class="mono">${fmt(resumo.total)}</strong></div>
+      <div class="resumo-item"><span>Ticket médio</span><strong class="mono">${fmt(resumo.ticket)}</strong></div>
+      ${resumo.canceladas ? `<div class="resumo-item alerta"><span>Canceladas</span><strong class="mono">${resumo.canceladas}</strong></div>` : ""}
+      <div class="resumo-formas">
+        ${formas.map(([forma, valor]) => `<span class="chip-pag pag-${forma.toLowerCase()}"><i class="${ICONE_FORMA[forma]}"></i>${ROTULO_FORMA[forma]} <b class="mono">${fmt(valor)}</b></span>`).join("")}
+      </div>
+    ` : "";
+  }
+
   if (!vendas.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem; font-weight:600;">Nenhuma venda encontrada para este filtro.</p>`;
+    container.innerHTML = `
+      <div class="estado-vazio">
+        <i class="ri-receipt-line"></i>
+        <span>Nenhuma venda encontrada para este filtro.</span>
+      </div>`;
     return;
   }
 
-  container.innerHTML = vendas.map(v => {
-    const cancelada = v.status === "CANCELADA";
-    const ocultaNoCaixa = cancelada && v.constarNoFechamento === false;
-    const nomeOperador = obterNomePerfil(v.usuarioId, v.operadorNome);
-    const permiteCancelar = podeCancelarVenda(v);
+  // Agrupa por dia: "Hoje", "Ontem", "Terça-feira"...
+  const grupos = new Map();
+  vendas.forEach(v => {
+    const dia = dataLocalISO(v.dataHora);
+    if (!grupos.has(dia)) grupos.set(dia, []);
+    grupos.get(dia).push(v);
+  });
 
+  container.innerHTML = [...grupos.entries()].map(([dia, lista]) => {
+    const doDia = resumoDasVendas(lista);
     return `
-      <div class="venda-card ${cancelada ? "venda-cancelada" : ""}">
-        <div style="flex: 1; min-width: 240px;">
-          <div class="venda-meta-row">
-            <strong class="mono">#${esc(v.id)}</strong>
-            <span class="badge ${cancelada ? "badge-closed" : "badge-open"}">${esc(v.status)}</span>
-            ${ocultaNoCaixa && usuarioLogado.isAdmin ? `<span class="badge badge-oculta">Oculta no caixa</span>` : ""}
-            <span class="badge badge-pagamento">${esc(formatarPagamentoTexto(v))}</span>
-            <span style="font-size:0.82rem; font-weight:600; color:var(--text-muted);">
-              ${new Date(v.dataHora).toLocaleString("pt-BR")} • ${esc(nomeOperador)} (Turno #${esc(v.turnoId)})
-            </span>
-          </div>
-          <div class="venda-itens-texto">
-            ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}
-          </div>
-          ${cancelada ? `
-            <div class="motivo-cancelamento">
-              <i class="ri-close-circle-line"></i> Cancelada por ${esc(v.canceladoPor || "Sistema")} em ${v.dataHoraCancelamento ? new Date(v.dataHoraCancelamento).toLocaleString("pt-BR") : "---"} — Motivo: "${esc(v.motivoCancelamento || "Não informado")}"
-            </div>
-          ` : ""}
+      <div class="grupo-dia">
+        <div class="grupo-dia-titulo">
+          <span>${esc(rotuloDia(dia))}</span>
+          <span class="mono">${doDia.qtd} ${doDia.qtd === 1 ? "venda" : "vendas"} · ${fmt(doDia.total)}</span>
         </div>
-
-        <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
-          <strong class="mono venda-valor-texto">
-            ${fmt(v.valorFinal)}
-          </strong>
-          <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
-            <i class="ri-printer-line"></i> 2ª via
-          </button>
-          ${permiteCancelar ? `
-            <button class="btn btn-danger btn-sm" onclick="abrirModalCancelamento('${esc(v.id)}')">
-              <i class="ri-close-circle-line"></i> Cancelar
-            </button>
-          ` : ""}
-        </div>
+        ${lista.map(linhaVendaHTML).join("")}
       </div>
     `;
   }).join("");
+}
+
+function linhaVendaHTML(v) {
+  const cancelada = v.status === "CANCELADA";
+  const ocultaNoCaixa = cancelada && v.constarNoFechamento === false;
+  const nomeOperador = obterNomePerfil(v.usuarioId, v.operadorNome);
+  const itens = (v.itens || []).map(i => `${i.quantidade}× ${i.nomeSnapshot}`).join(", ");
+  const quando = v.dataHoraCancelamento ? ` às ${formatarHora(v.dataHoraCancelamento)}` : "";
+
+  return `
+    <div class="venda-linha-v2 ${cancelada ? "cancelada" : ""}">
+      <div class="venda-hora mono">${formatarHora(v.dataHora)}</div>
+      <div class="venda-corpo">
+        <div class="venda-itens">${esc(itens)}</div>
+        <div class="venda-meta">
+          ${chipsPagamentoHTML(v)}
+          ${cancelada ? `<span class="badge badge-closed">Cancelada</span>` : ""}
+          ${ocultaNoCaixa && usuarioLogado.isAdmin ? `<span class="badge badge-oculta">Oculta no caixa</span>` : ""}
+          <span class="texto-suave">${esc(nomeOperador)} · #${esc(v.id)}</span>
+        </div>
+        ${cancelada ? `
+          <div class="motivo-cancelamento">
+            <i class="ri-close-circle-line"></i> Cancelada por ${esc(v.canceladoPor || "Sistema")}${quando} · ${esc(v.motivoCancelamento || "Sem motivo informado")}
+          </div>
+        ` : ""}
+      </div>
+      <strong class="venda-valor mono">${fmt(v.valorFinal)}</strong>
+      <div class="venda-acoes">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')" title="Imprimir 2ª via">
+          <i class="ri-printer-line"></i><span class="rotulo">2ª via</span>
+        </button>
+        ${podeCancelarVenda(v) ? `
+          <button type="button" class="btn btn-danger btn-sm" onclick="abrirModalCancelamento('${esc(v.id)}')" title="Cancelar venda">
+            <i class="ri-close-circle-line"></i><span class="rotulo">Cancelar</span>
+          </button>
+        ` : ""}
+      </div>
+    </div>
+  `;
 }
 
 function abrirModalCancelamento(vendaId) {
@@ -2100,22 +2302,18 @@ function renderizarDashboard() {
 
   // Sem filtro: últimos JANELA_TEMPO_REAL_DIAS dias
   let vendasConcluidas = (filtroData ? todasVendas() : cacheVendas).filter(v => v.status === "CONCLUIDA");
-
   if (filtroData) {
     vendasConcluidas = vendasConcluidas.filter(v => dataLocalISO(v.dataHora) === filtroData);
   }
 
-  const faturamentoTotal = r2(vendasConcluidas.reduce((acc, v) => acc + v.valorFinal, 0));
+  const resumo = resumoDasVendas(vendasConcluidas);
   let totalItensVendidos = 0;
-
   const vendasPorHora = Array(24).fill(0);
   const rankingProdutos = {};
 
   vendasConcluidas.forEach(v => {
-    const hora = new Date(v.dataHora).getHours();
-    vendasPorHora[hora] += 1;
-
-    v.itens.forEach(item => {
+    vendasPorHora[new Date(v.dataHora).getHours()] += 1;
+    (v.itens || []).forEach(item => {
       totalItensVendidos += item.quantidade;
       rankingProdutos[item.nomeSnapshot] = (rankingProdutos[item.nomeSnapshot] || 0) + item.quantidade;
     });
@@ -2123,14 +2321,16 @@ function renderizarDashboard() {
 
   const maxVendasHora = Math.max(...vendasPorHora);
   const indicePico = maxVendasHora > 0 ? vendasPorHora.indexOf(maxVendasHora) : -1;
+  // Hora do pico grande e a quantidade menor ao lado, para caber numa linha
   const textoPico = indicePico >= 0
-    ? `${String(indicePico).padStart(2, "0")}h (${maxVendasHora} ${maxVendasHora === 1 ? "venda" : "vendas"})`
+    ? `${String(indicePico).padStart(2, "0")}h <small>${maxVendasHora} ${maxVendasHora === 1 ? "venda" : "vendas"}</small>`
     : "---";
 
-  document.getElementById("kpi-faturamento").textContent = `${fmt(faturamentoTotal)}`;
-  document.getElementById("kpi-qtd-vendas").textContent = String(vendasConcluidas.length);
+  document.getElementById("kpi-faturamento").textContent = fmt(resumo.total);
+  document.getElementById("kpi-qtd-vendas").textContent = String(resumo.qtd);
+  document.getElementById("kpi-ticket-medio").textContent = fmt(resumo.ticket);
   document.getElementById("kpi-itens-vendidos").textContent = String(totalItensVendidos);
-  document.getElementById("kpi-hora-pico").textContent = textoPico;
+  document.getElementById("kpi-hora-pico").innerHTML = textoPico;
 
   const top10 = Object.entries(rankingProdutos)
     .sort((a, b) => b[1] - a[1])
@@ -2141,10 +2341,23 @@ function renderizarDashboard() {
   // Cores do gráfico seguem o tema (claro ou escuro)
   const estiloTema = getComputedStyle(document.documentElement);
   const corTema = nome => estiloTema.getPropertyValue(nome).trim();
+  const comAlfa = (variavelRGB, alfa) => `rgba(${corTema(variavelRGB)}, ${alfa})`;
   Chart.defaults.color = corTema("--text-muted");
   Chart.defaults.borderColor = corTema("--border");
   Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+  Chart.defaults.font.size = 12;
+  const dicas = {
+    backgroundColor: corTema("--surface"),
+    titleColor: corTema("--text"),
+    bodyColor: corTema("--text"),
+    borderColor: corTema("--border-strong"),
+    borderWidth: 1,
+    padding: 10,
+    cornerRadius: 8,
+    displayColors: false
+  };
 
+  // Vendas por hora: o horário de pico em destaque
   const ctxPicos = document.getElementById("chart-picos")?.getContext("2d");
   if (ctxPicos) {
     if (chartInstanciaPicos) chartInstanciaPicos.destroy();
@@ -2153,24 +2366,30 @@ function renderizarDashboard() {
       data: {
         labels: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}h`),
         datasets: [{
-          label: "Vendas no Horário",
+          label: "Vendas",
           data: vendasPorHora,
-          backgroundColor: corTema("--accent"),
-          hoverBackgroundColor: corTema("--accent-hover"),
-          borderColor: corTema("--accent"),
-          borderWidth: 0,
-          borderRadius: 6
+          backgroundColor: vendasPorHora.map((_, h) => h === indicePico ? corTema("--accent") : comAlfa("--accent-rgb", 0.35)),
+          hoverBackgroundColor: corTema("--accent"),
+          borderRadius: 6,
+          maxBarThickness: 30
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+        plugins: {
+          legend: { display: false },
+          tooltip: { ...dicas, callbacks: { label: c => `${c.parsed.y} ${c.parsed.y === 1 ? "venda" : "vendas"}` } }
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: { beginAtZero: true, ticks: { precision: 0 } }
+        }
       }
     });
   }
 
+  // Produtos mais vendidos
   const ctxProdutos = document.getElementById("chart-produtos")?.getContext("2d");
   if (ctxProdutos) {
     if (chartInstanciaProdutos) chartInstanciaProdutos.destroy();
@@ -2179,21 +2398,77 @@ function renderizarDashboard() {
       data: {
         labels: top10.length ? top10.map(item => item[0]) : ["Sem vendas"],
         datasets: [{
-          label: "Unidades Vendidas",
+          label: "Unidades",
           data: top10.length ? top10.map(item => item[1]) : [0],
           backgroundColor: corTema("--success"),
           hoverBackgroundColor: corTema("--success"),
-          borderColor: corTema("--success"),
-          borderWidth: 0,
-          borderRadius: 6
+          borderRadius: 6,
+          maxBarThickness: 26
         }]
       },
       options: {
         indexAxis: "y",
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
+        plugins: {
+          legend: { display: false },
+          tooltip: { ...dicas, callbacks: { label: c => `${c.parsed.x} un.` } }
+        },
+        scales: {
+          x: { beginAtZero: true, ticks: { precision: 0 } },
+          y: { grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // Formas de pagamento: quanto entrou em cada uma
+  const formas = ["DINHEIRO", "PIX", "CREDITO", "DEBITO"];
+  const valores = formas.map(f => resumo.porForma[f]);
+  const totalFormas = valores.reduce((acc, v) => acc + v, 0);
+  const temValores = totalFormas > 0;
+  const ctxFormas = document.getElementById("chart-formas")?.getContext("2d");
+  if (ctxFormas) {
+    if (chartInstanciaFormas) chartInstanciaFormas.destroy();
+    chartInstanciaFormas = new Chart(ctxFormas, {
+      type: "doughnut",
+      data: {
+        labels: formas.map(f => ROTULO_FORMA[f]),
+        datasets: [{
+          data: temValores ? valores : [1],
+          backgroundColor: temValores
+            ? [corTema("--success"), corTema("--info"), corTema("--accent"), corTema("--warning")]
+            : [corTema("--surface-3")],
+          borderColor: corTema("--surface"),
+          borderWidth: 3,
+          hoverOffset: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: "62%",
+        plugins: {
+          legend: {
+            position: "bottom",
+            labels: {
+              usePointStyle: true,
+              pointStyle: "circle",
+              padding: 14,
+              generateLabels: chart => {
+                const base = Chart.overrides.doughnut.plugins.legend.labels.generateLabels(chart);
+                return base.map((item, i) => ({ ...item, text: temValores ? `${item.text} · ${fmt(valores[i])}` : "Sem vendas no período" }))
+                  .slice(0, temValores ? base.length : 1);
+              }
+            }
+          },
+          tooltip: {
+            ...dicas,
+            callbacks: {
+              label: c => temValores ? `${c.label}: ${fmt(c.parsed)} (${Math.round((c.parsed / totalFormas) * 100)}%)` : "Sem vendas"
+            }
+          }
+        }
       }
     });
   }
@@ -2284,47 +2559,99 @@ function atualizarStatusTurnoUI() {
   const badge = document.getElementById("status-turno-badge");
   const aviso = document.getElementById("aviso-turno-fechado");
   const pdvArea = document.getElementById("area-operacao-pdv");
-  const infoTurno = document.getElementById("info-turno-atual");
 
   if (turnoAtivo) {
-    const nomeAtual = obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome);
-    badge.textContent = `Caixa aberto · ${turnoAtivo.tipoTurno}`;
+    badge.innerHTML = `Caixa aberto · ${rotuloTurnoHTML(turnoAtivo.tipoTurno)}`;
     badge.className = "badge badge-open";
     aviso.classList.add("hidden");
     pdvArea.classList.remove("hidden");
-
-    infoTurno.innerHTML = `
-      <p style="margin:0.6rem 0; color:var(--text-muted); font-weight:600;">
-        Operador: <strong style="color:var(--text-main);">${esc(nomeAtual)}</strong> |
-        Turno: <strong style="color:var(--text-main);">${esc(turnoAtivo.tipoTurno)}</strong> |
-        Abertura: ${new Date(turnoAtivo.dataHoraAbertura).toLocaleString("pt-BR")}
-      </p>
-      <div style="display:flex; gap:0.6rem; flex-wrap:wrap; margin-top:0.85rem;">
-        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'vendas')">
-          <i class="ri-printer-line"></i> Parcial por vendas
-        </button>
-        <button class="btn btn-primary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'produtos')">
-          <i class="ri-list-check-2"></i> Parcial por produtos
-        </button>
-        <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('vendas')">
-          <i class="ri-lock-password-line"></i> Encerrar e imprimir por vendas
-        </button>
-        <button class="btn btn-danger-solid" onclick="fecharTurnoAtual('produtos')">
-          <i class="ri-lock-password-line"></i> Encerrar e imprimir por produtos
-        </button>
-        <button class="btn btn-secondary" onclick="fecharTurnoAtual(null)">
-          Encerrar sem imprimir
-        </button>
-      </div>
-    `;
   } else {
     badge.textContent = "Caixa fechado";
     badge.className = "badge badge-closed";
     aviso.classList.remove("hidden");
     pdvArea.classList.add("hidden");
-    infoTurno.innerHTML = `<p style="color:var(--text-muted); margin-top:0.5rem; font-weight:600;">Você não possui turno aberto no momento. Abra seu caixa na aba PDV.</p>`;
   }
+
+  renderizarInfoTurno();
   atualizarBarraAtalhos();
+}
+
+// Painel "Meu turno em andamento": números do turno, totais por forma e ações
+function renderizarInfoTurno() {
+  const infoTurno = document.getElementById("info-turno-atual");
+  if (!infoTurno || !usuarioLogado) return;
+
+  if (!turnoAtivo) {
+    infoTurno.innerHTML = `
+      <div class="estado-vazio">
+        <i class="ri-time-line"></i>
+        <span>Você não tem turno aberto. Abra o caixa na aba PDV.</span>
+      </div>`;
+    return;
+  }
+
+  const modoAnterior = document.getElementById("modo-encerrar")?.value ?? "vendas";
+  const resumo = resumoDasVendas(cacheVendas.filter(v => mesmoId(v.turnoId, turnoAtivo.id)));
+  const nomeAtual = obterNomePerfil(turnoAtivo.usuarioId, turnoAtivo.operadorNome);
+  const maiorForma = Math.max(1, ...Object.values(resumo.porForma));
+  const formas = ["DINHEIRO", "PIX", "CREDITO", "DEBITO"];
+
+  infoTurno.innerHTML = `
+    <div class="turno-topo">
+      <span class="badge badge-open">Aberto</span>
+      <strong>${esc(turnoAtivo.tipoTurno)}</strong>
+      <span class="texto-suave">${esc(nomeAtual)} · desde ${formatarDataCurta(turnoAtivo.dataHoraAbertura)} · ${duracaoTexto(Date.now() - turnoAtivo.dataHoraAbertura)}</span>
+    </div>
+
+    <div class="kpi-grid kpi-turno">
+      <div class="kpi-card kpi-teal"><span>Vendas</span><strong>${resumo.qtd}</strong></div>
+      <div class="kpi-card kpi-purple"><span>Total do turno</span><strong class="mono">${fmt(resumo.total)}</strong></div>
+      <div class="kpi-card kpi-blue"><span>Ticket médio</span><strong class="mono">${fmt(resumo.ticket)}</strong></div>
+      <div class="kpi-card kpi-amber"><span>Recebido em dinheiro</span><strong class="mono">${fmt(resumo.porForma.DINHEIRO)}</strong></div>
+    </div>
+
+    <div class="formas-turno">
+      ${formas.map(f => `
+        <div class="forma-linha pag-${f.toLowerCase()}">
+          <span class="forma-nome"><i class="${ICONE_FORMA[f]}"></i> ${ROTULO_FORMA[f]}</span>
+          <span class="forma-barra"><i style="width: ${Math.round((resumo.porForma[f] / maiorForma) * 100)}%"></i></span>
+          <strong class="mono">${fmt(resumo.porForma[f])}</strong>
+        </div>
+      `).join("")}
+      ${resumo.canceladas ? `<p class="texto-suave">${resumo.canceladas} ${resumo.canceladas === 1 ? "venda cancelada" : "vendas canceladas"} neste turno, fora dos totais.</p>` : ""}
+    </div>
+
+    <div class="turno-acoes">
+      <div class="grupo-acoes">
+        <span class="rotulo-grupo">Imprimir parcial</span>
+        <button class="btn btn-secondary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'vendas')">
+          <i class="ri-printer-line"></i> Por vendas
+        </button>
+        <button class="btn btn-secondary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'produtos')">
+          <i class="ri-list-check-2"></i> Por produtos
+        </button>
+      </div>
+      <div class="grupo-acoes">
+        <label class="rotulo-grupo" for="modo-encerrar">Ao encerrar, imprimir</label>
+        <select id="modo-encerrar">
+          <option value="vendas">Por vendas</option>
+          <option value="produtos">Por produtos</option>
+          <option value="">Não imprimir</option>
+        </select>
+        <button class="btn btn-danger-solid" onclick="encerrarTurnoSelecionado()">
+          <i class="ri-lock-password-line"></i> Encerrar turno
+        </button>
+      </div>
+    </div>
+  `;
+
+  const select = document.getElementById("modo-encerrar");
+  if (select) select.value = modoAnterior;
+}
+
+function encerrarTurnoSelecionado() {
+  const modo = document.getElementById("modo-encerrar")?.value || "";
+  fecharTurnoAtual(modo || null);
 }
 
 // 12. CARRINHO
@@ -2643,9 +2970,6 @@ function iniciarStatusNuvem() {
 }
 
 function atualizarStatusNuvem() {
-  const el = document.getElementById("status-nuvem");
-  const texto = document.getElementById("status-nuvem-texto");
-  if (!el || !texto) return;
   const online = navigator.onLine !== false;
   const vendasTexto = n => `${n} ${n === 1 ? "venda" : "vendas"}`;
   let classe;
@@ -2672,9 +2996,14 @@ function atualizarStatusNuvem() {
     dica = "Tudo salvo na nuvem.";
   }
 
-  el.className = `status-nuvem ${classe}`;
-  el.title = dica;
-  texto.textContent = rotulo;
+  ["status-nuvem", "status-nuvem-bloqueio"].forEach(id => {
+    const chip = document.getElementById(id);
+    if (!chip) return;
+    chip.className = `status-nuvem ${classe}`;
+    chip.title = dica;
+    const texto = chip.querySelector(".status-texto");
+    if (texto) texto.textContent = rotulo;
+  });
 }
 
 // 13. HISTÓRICO DE TURNOS
@@ -2696,72 +3025,70 @@ function carregarHistoricoTurnos() {
   }
 
   const vendasConhecidas = todasVendas();
-
   const container = document.getElementById("lista-historico-turnos");
   if (!turnos.length) {
-    container.innerHTML = `<p style="color:var(--text-muted); font-weight:600;">Nenhum turno registrado para este filtro.</p>`;
+    container.innerHTML = `
+      <div class="estado-vazio">
+        <i class="ri-history-line"></i>
+        <span>Nenhum turno registrado para este filtro.</span>
+      </div>`;
     return;
   }
 
   container.innerHTML = turnos.map(t => {
-    const nomeOperadorAtual = obterNomePerfil(t.usuarioId, t.operadorNome);
-    const vendasTurno = vendasConhecidas
-      .filter(v => mesmoId(v.turnoId, t.id) && v.status === "CONCLUIDA")
+    const nomeOperador = obterNomePerfil(t.usuarioId, t.operadorNome);
+    const vendasDoTurno = vendasConhecidas.filter(v => mesmoId(v.turnoId, t.id));
+    const concluidas = vendasDoTurno
+      .filter(v => v.status === "CONCLUIDA")
       .sort((a, b) => a.dataHora - b.dataHora);
-    const canceladasVisiveis = vendasConhecidas.filter(
-      v => mesmoId(v.turnoId, t.id) && v.status === "CANCELADA" && v.constarNoFechamento !== false
-    );
-    const totalTurno = r2(vendasTurno.reduce((acc, v) => acc + v.valorFinal, 0));
+    const canceladasVisiveis = vendasDoTurno.filter(v => v.status === "CANCELADA" && v.constarNoFechamento !== false);
+    const total = r2(concluidas.reduce((acc, v) => acc + v.valorFinal, 0));
+    const aberto = t.status === "ABERTO";
+    const chave = String(t.id);
+    const estaAberto = estadoTurnoHistorico.has(chave) ? estadoTurnoHistorico.get(chave) : aberto;
 
-    const listaVendasHTML = vendasTurno.length
-      ? vendasTurno.map(v => `
-          <div class="venda-linha">
-            <div>
-              <span class="mono">#${esc(v.id)} (${new Date(v.dataHora).toLocaleTimeString("pt-BR")})</span>
-              <span class="badge badge-pagamento" style="margin:0 0.3rem;">${esc(formatarPagamentoTexto(v))}</span>
-              ${esc(v.itens.map(i => `${i.quantidade}x ${i.nomeSnapshot}`).join(", "))}
-            </div>
-            <div style="display:flex; align-items:center; gap:0.6rem;">
-              <strong class="mono" style="color:var(--success-text); font-weight:800;">${fmt(v.valorFinal)}</strong>
-              <button class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')">
-                <i class="ri-printer-line"></i> 2ª via
-              </button>
-            </div>
+    const listaVendasHTML = concluidas.length
+      ? concluidas.map(v => `
+          <div class="venda-turno">
+            <span class="venda-hora mono">${formatarHora(v.dataHora)}</span>
+            <span class="venda-itens">${esc((v.itens || []).map(i => `${i.quantidade}× ${i.nomeSnapshot}`).join(", "))}</span>
+            <span class="venda-turno-pag">${chipsPagamentoHTML(v)}</span>
+            <strong class="mono">${fmt(v.valorFinal)}</strong>
+            <button type="button" class="icon-btn" onclick="imprimirCupomVenda80mm('${esc(v.id)}')" title="Imprimir 2ª via" aria-label="Imprimir 2ª via">
+              <i class="ri-printer-line"></i>
+            </button>
           </div>
         `).join("")
-      : `<small style="color:var(--text-muted); font-weight:600;">Nenhuma venda concluída neste turno.</small>`;
+      : `<p class="vazio-texto">Nenhuma venda concluída neste turno.</p>`;
 
     return `
-      <div class="turno-historico-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-          <div>
-            <strong>Turno #${esc(t.id)} — ${esc(t.tipoTurno)}</strong>
-            <span class="badge ${t.status === 'ABERTO' ? 'badge-open' : 'badge-closed'}">${esc(t.status)}</span>
-            <div style="font-size:0.84rem; font-weight:600; color:var(--text-muted); margin-top:0.25rem;">
-              Operador: <strong style="color:var(--text-main);">${esc(nomeOperadorAtual)}</strong> |
-              Início: ${new Date(t.dataHoraAbertura).toLocaleString("pt-BR")}
-              ${t.dataHoraFechamento ? ` | Fim: ${new Date(t.dataHoraFechamento).toLocaleString("pt-BR")}` : ""}
-            </div>
-            <div style="margin-top:0.35rem; font-size:0.92rem; font-weight:700;">
-              Vendas: <strong>${vendasTurno.length}</strong>
-              ${canceladasVisiveis.length ? ` | <span style="color:var(--danger);">Canceladas: ${canceladasVisiveis.length}</span>` : ""} |
-              Total do Turno: <strong class="mono" style="color:var(--success-text);">${fmt(totalTurno)}</strong>
-            </div>
+      <details class="turno-card" ${estaAberto ? "open" : ""} ontoggle="registrarTurnoAberto('${esc(t.id)}', this.open)">
+        <summary>
+          <div class="turno-card-titulo">
+            <span class="badge ${aberto ? "badge-open" : "badge-neutro"}">${aberto ? "Aberto" : "Fechado"}</span>
+            <strong>${esc(t.tipoTurno)}</strong>
+            <span class="texto-suave">${esc(nomeOperador)} · ${formatarDataCurta(t.dataHoraAbertura)} → ${t.dataHoraFechamento ? formatarDataCurta(t.dataHoraFechamento) : "agora"}</span>
           </div>
-          <div style="display:flex; gap:0.45rem; flex-wrap:wrap;">
-            <button class="btn btn-primary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'vendas')">
-              <i class="ri-printer-cloud-line"></i> Por vendas
+          <div class="turno-card-numeros">
+            <span class="texto-suave">${concluidas.length} ${concluidas.length === 1 ? "venda" : "vendas"}</span>
+            ${canceladasVisiveis.length ? `<span class="badge badge-closed">${canceladasVisiveis.length} ${canceladasVisiveis.length === 1 ? "cancelada" : "canceladas"}</span>` : ""}
+            <strong class="mono">${fmt(total)}</strong>
+            <i class="ri-arrow-down-s-line seta" aria-hidden="true"></i>
+          </div>
+        </summary>
+        <div class="turno-card-corpo">
+          <div class="turno-card-acoes">
+            <span class="rotulo-grupo">Imprimir extrato</span>
+            <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'vendas')">
+              <i class="ri-printer-line"></i> Por vendas
             </button>
             <button class="btn btn-secondary btn-sm" onclick="imprimirRelatorioTurno80mm('${esc(t.id)}', 'produtos')">
               <i class="ri-list-check-2"></i> Por produtos
             </button>
           </div>
+          <div class="vendas-turno">${listaVendasHTML}</div>
         </div>
-
-        <div class="vendas-sublista">
-          ${listaVendasHTML}
-        </div>
-      </div>
+      </details>
     `;
   }).join("");
 }
@@ -3035,6 +3362,10 @@ Object.assign(window, {
   alternarFavorito,
   moverFavorito,
   salvarConfigPDV,
+  alternarCampoSenha,
+  mostrarSenhaOperador,
+  encerrarTurnoSelecionado,
+  registrarTurnoAberto,
   atualizarCarrinhoUI,
   carregarHistoricoTurnos,
   imprimirCupomVenda80mm,
