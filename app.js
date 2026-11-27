@@ -71,6 +71,9 @@ let notasSugeridas = [];
 let pendentesEnvio = 0;
 let servidorRespondeu = false;
 let resolverDialogo = null;
+// Venda que está tendo a forma de pagamento alterada (o valor não muda)
+let vendaEmAlteracao = null;
+let alteracaoOrigem = null;
 // Leitor de código de barras com o cursor fora da busca
 let bufferLeitor = "";
 let ultimaTeclaLeitor = 0;
@@ -859,6 +862,9 @@ window.addEventListener("keydown", (e) => {
     } else if (e.key === "Enter") {
       e.preventDefault();
       confirmarImpressaoPosVenda(true);
+    } else if (e.key === "F2") {
+      e.preventDefault();
+      alterarPagamentoUltimaVenda();
     }
     return;
   }
@@ -869,7 +875,7 @@ window.addEventListener("keydown", (e) => {
       if (pagamentoPassoAtual === 1.1 || pagamentoPassoAtual === 2) {
         voltarParaEscolhaForma();
       } else {
-        fecharModalPagamento();
+        cancelarPagamento();
       }
       return;
     }
@@ -884,7 +890,7 @@ window.addEventListener("keydown", (e) => {
         e.preventDefault();
         const btnConcluir = document.getElementById("btn-concluir-pagamento-misto");
         if (btnConcluir && !btnConcluir.classList.contains("hidden")) {
-          finalizarVendaComposta();
+          concluirPagamento();
         }
       }
     } else if (pagamentoPassoAtual === 1.1) {
@@ -1764,6 +1770,20 @@ function fecharModalPagamento() {
   pagamentoFormaSelecionada = null;
   pagamentoValorParcialAtual = 0;
   pagamentosParciaisVenda = [];
+  vendaEmAlteracao = null;
+  alteracaoOrigem = null;
+}
+
+// Esc / Cancelar: na alteração aberta pela venda concluída, volta para ela
+function cancelarPagamento() {
+  const voltarParaVendaConcluida = Boolean(vendaEmAlteracao && alteracaoOrigem === "pos-venda");
+  fecharModalPagamento();
+  if (voltarParaVendaConcluida && ultimaVendaObjeto) mostrarPosVenda(ultimaVendaObjeto);
+}
+
+// Total que está sendo pago: o do carrinho ou, na alteração, o da venda (fixo)
+function totalEmPagamento() {
+  return vendaEmAlteracao ? r2(vendaEmAlteracao.valorFinal) : calcularTotalVendaCarrinho();
 }
 
 function calcularTotalVendaCarrinho() {
@@ -1775,11 +1795,25 @@ function calcularValorPagoParcialmente() {
 }
 
 function calcularRestante() {
-  return r2(Math.max(0, calcularTotalVendaCarrinho() - calcularValorPagoParcialmente()));
+  return r2(Math.max(0, totalEmPagamento() - calcularValorPagoParcialmente()));
 }
 
 function atualizarInterfaceModalPagamento() {
-  const totalVenda = calcularTotalVendaCarrinho();
+  const totalVenda = totalEmPagamento();
+
+  // Título e contexto mudam quando é a alteração de uma venda já concluída
+  const titulo = document.getElementById("titulo-pagamento");
+  const contexto = document.getElementById("pagamento-contexto");
+  if (titulo) titulo.textContent = vendaEmAlteracao ? "Alterar pagamento" : "Pagamento";
+  if (contexto) {
+    if (vendaEmAlteracao) {
+      contexto.innerHTML = `Venda #${esc(vendaEmAlteracao.id)} das ${formatarHora(vendaEmAlteracao.dataHora)} · forma atual: <strong>${esc(descricaoPagamentos(pagamentosDaVenda(vendaEmAlteracao)))}</strong>. O valor de ${fmt(vendaEmAlteracao.valorFinal)} não muda.`;
+      contexto.classList.remove("hidden");
+    } else {
+      contexto.innerHTML = "";
+      contexto.classList.add("hidden");
+    }
+  }
   const totalPago = calcularValorPagoParcialmente();
   const restante = r2(Math.max(0, totalVenda - totalPago));
 
@@ -1808,7 +1842,9 @@ function atualizarInterfaceModalPagamento() {
     passo1El.classList.remove("hidden");
     document.getElementById("subtitulo-passo-pag").textContent = pagamentosParciaisVenda.length
       ? `Falta ${fmt(restante)}. Escolha a próxima forma:`
-      : "Escolha a forma de pagamento (F5 = dinheiro exato):";
+      : vendaEmAlteracao
+        ? "Escolha a nova forma de pagamento (F5 = dinheiro):"
+        : "Escolha a forma de pagamento (F5 = dinheiro exato):";
     btnConcluir.classList.toggle("hidden", restante > 0.005);
   } else if (pagamentoPassoAtual === 1.1) {
     passoValorEl.classList.remove("hidden");
@@ -1966,8 +2002,13 @@ function removerPagamentoParcial(index) {
 // Quando o valor informado cobre o total, a venda fecha sozinha (sem outro F2)
 function concluirSePago() {
   if (pagamentosParciaisVenda.length && calcularRestante() <= 0.005) {
-    finalizarVendaComposta();
+    concluirPagamento();
   }
+}
+
+function concluirPagamento() {
+  if (vendaEmAlteracao) salvarAlteracaoPagamento();
+  else finalizarVendaComposta();
 }
 
 function pagarRestanteEmDinheiro() {
@@ -1997,15 +2038,7 @@ function finalizarVendaComposta() {
     return;
   }
 
-  // O Firebase não aceita campos "undefined": cada pagamento é montado campo a campo
-  const pagamentosFinalizados = pagamentosParciaisVenda.map(p => {
-    const pagamento = { forma: p.forma, bandeira: p.bandeira ?? null, valor: r2(p.valor) };
-    if (p.forma === "DINHEIRO") {
-      pagamento.recebido = r2(p.recebido ?? p.valor);
-      pagamento.troco = r2(p.troco ?? 0);
-    }
-    return pagamento;
-  });
+  const pagamentosFinalizados = montarPagamentos(pagamentosParciaisVenda);
   const trocoTotal = r2(pagamentosFinalizados.reduce((acc, p) => acc + (p.troco || 0), 0));
   const valorBruto = totalVenda;
   const valorFinal = valorBruto;
@@ -2037,18 +2070,23 @@ function finalizarVendaComposta() {
 
   ultimaVendaId = novoId;
   ultimaVendaObjeto = venda;
+  mostrarPosVenda(venda);
+}
 
+// Tela de venda concluída: troco em destaque, total, forma de pagamento e impressão
+function mostrarPosVenda(venda) {
+  const troco = r2(Number(venda.troco) || 0);
   const trocoBox = document.getElementById("troco-pos-venda");
-  if (trocoTotal > 0) {
-    document.getElementById("troco-pos-venda-valor").textContent = fmt(trocoTotal);
+  if (troco > 0) {
+    document.getElementById("troco-pos-venda-valor").textContent = fmt(troco);
     trocoBox.classList.remove("hidden");
   } else {
     trocoBox.classList.add("hidden");
   }
 
   document.getElementById("resumo-modal-venda").innerHTML = `
-    <div class="resumo-total"><span>Total</span><strong>${fmt(valorFinal)}</strong></div>
-    <div class="resumo-modal-pagamento">Venda #${esc(novoId)} · ${esc(formatarPagamentoTexto(venda))}</div>
+    <div class="resumo-total"><span>Total</span><strong>${fmt(venda.valorFinal)}</strong></div>
+    <div class="resumo-modal-pagamento">Venda #${esc(venda.id)} · ${esc(formatarPagamentoTexto(venda))}</div>
   `;
   document.getElementById("modal-pos-venda").classList.add("active");
   document.getElementById("btn-confirmar-impressao").focus();
@@ -2081,6 +2119,148 @@ function podeCancelarVenda(venda) {
   if (!usuarioLogado || venda.status === "CANCELADA") return false;
   if (usuarioLogado.isAdmin) return true;
   return Boolean(turnoAtivo && mesmoId(venda.turnoId, turnoAtivo.id) && mesmoId(venda.usuarioId, usuarioLogado.id));
+}
+
+// ALTERAR A FORMA DE PAGAMENTO SEM MUDAR O VALOR
+// Mesma regra do cancelamento: o operador só mexe nas vendas do próprio turno aberto; o admin, em qualquer uma
+function podeAlterarPagamento(venda) {
+  return Boolean(venda && venda.status === "CONCLUIDA" && podeCancelarVenda(venda));
+}
+
+// O Firebase não aceita campos "undefined": cada pagamento é montado campo a campo
+function montarPagamentos(lista) {
+  return lista.map(p => {
+    const pagamento = { forma: p.forma, bandeira: p.bandeira ?? null, valor: r2(p.valor) };
+    if (p.forma === "DINHEIRO") {
+      pagamento.recebido = r2(p.recebido ?? p.valor);
+      pagamento.troco = r2(p.troco ?? 0);
+    }
+    return pagamento;
+  });
+}
+
+// "Dinheiro", "Crédito Visa", "Débito Master + PIX"
+function descricaoPagamentos(pagamentos) {
+  return (pagamentos || []).map(p => `${ROTULO_FORMA[p.forma] || p.forma}${p.bandeira ? ` ${p.bandeira}` : ""}`).join(" + ");
+}
+
+function abrirAlteracaoPagamento(vendaId, origem = "lista") {
+  let v = buscarVenda(vendaId);
+  if (!v && ultimaVendaObjeto && mesmoId(ultimaVendaObjeto.id, vendaId)) v = ultimaVendaObjeto;
+  if (!podeAlterarPagamento(v)) {
+    avisar("O pagamento desta venda não pode ser alterado.", { tipo: "alerta" });
+    return;
+  }
+
+  document.getElementById("modal-pos-venda").classList.remove("active");
+  vendaEmAlteracao = v;
+  alteracaoOrigem = origem;
+  pagamentoPassoAtual = 1;
+  pagamentoFormaSelecionada = null;
+  pagamentoValorParcialAtual = 0;
+  pagamentosParciaisVenda = [];
+  atualizarInterfaceModalPagamento();
+  document.getElementById("modal-pagamento").classList.add("active");
+}
+
+// F2 na tela de venda concluída: corrige a forma que acabou de ser registrada
+function alterarPagamentoUltimaVenda() {
+  if (ultimaVendaId) abrirAlteracaoPagamento(ultimaVendaId, "pos-venda");
+}
+
+// Grava a venda e mantém em dia a cópia das vendas antigas (fora da janela em tempo real)
+function gravarVenda(venda) {
+  setDoc(doc(db, "vendas", String(venda.id)), venda).catch(erro => {
+    console.error("Erro ao salvar a venda:", erro);
+    avisar("Não foi possível salvar a alteração na nuvem.", { tipo: "erro" });
+  });
+  if (vendasAntigas.has(String(venda.id))) {
+    vendasAntigas.set(String(venda.id), venda);
+    carregarAbaVendas();
+    carregarHistoricoTurnos();
+  }
+}
+
+function salvarAlteracaoPagamento() {
+  const v = vendaEmAlteracao;
+  const origem = alteracaoOrigem;
+  if (!v) return;
+
+  if (Math.abs(r2(v.valorFinal) - calcularValorPagoParcialmente()) > 0.01) {
+    tocarSom("erro");
+    avisar("O valor informado precisa ser igual ao total da venda.", { tipo: "erro" });
+    return;
+  }
+
+  const novos = montarPagamentos(pagamentosParciaisVenda);
+  const antigos = montarPagamentos(pagamentosDaVenda(v));
+  fecharModalPagamento();
+
+  const assinatura = lista => JSON.stringify(lista.map(p => [p.forma, p.bandeira, p.valor, p.recebido ?? null]));
+  if (assinatura(novos) === assinatura(antigos)) {
+    avisar("A forma de pagamento já era essa. Nada foi alterado.", { tipo: "info" });
+    if (origem === "pos-venda") mostrarPosVenda(v);
+    return;
+  }
+
+  const vendaAlterada = {
+    ...v,
+    pagamentos: novos,
+    formaPagamento: novos.length === 1 ? novos[0].forma : "MISTO",
+    bandeira: novos.length === 1 ? novos[0].bandeira : null,
+    troco: r2(novos.reduce((acc, p) => acc + (p.troco || 0), 0)),
+    alteracoesPagamento: [
+      ...(Array.isArray(v.alteracoesPagamento) ? v.alteracoesPagamento : []),
+      {
+        de: antigos,
+        para: novos,
+        por: usuarioLogado.nome,
+        porAdmin: Boolean(usuarioLogado.isAdmin),
+        dataHora: Date.now()
+      }
+    ]
+  };
+  gravarVenda(vendaAlterada);
+  if (mesmoId(ultimaVendaId, v.id)) ultimaVendaObjeto = vendaAlterada;
+
+  avisar(`Pagamento alterado para ${descricaoPagamentos(novos)}. O valor continua ${fmt(v.valorFinal)}.`, {
+    tipo: "sucesso",
+    acao: {
+      rotulo: "Desfazer",
+      fn: () => {
+        // Só desfaz a forma de pagamento; uma venda cancelada nesse meio-tempo continua cancelada
+        const atual = buscarVenda(v.id) || vendaAlterada;
+        if (atual.status !== "CONCLUIDA") {
+          avisar("A venda foi cancelada depois da alteração. Não dá mais para desfazer.", { tipo: "alerta" });
+          return;
+        }
+        const restaurada = {
+          ...atual,
+          pagamentos: antigos,
+          formaPagamento: v.formaPagamento ?? (antigos.length === 1 ? antigos[0].forma : "MISTO"),
+          bandeira: v.bandeira ?? null,
+          troco: r2(Number(v.troco) || 0),
+          alteracoesPagamento: (Array.isArray(atual.alteracoesPagamento) ? atual.alteracoesPagamento : []).slice(0, -1)
+        };
+        gravarVenda(restaurada);
+        if (mesmoId(ultimaVendaId, v.id)) ultimaVendaObjeto = restaurada;
+      }
+    }
+  });
+
+  if (origem === "pos-venda") mostrarPosVenda(vendaAlterada);
+}
+
+// Na lista de vendas: quem alterou, quando e qual era a forma antes
+function notaAlteracaoHTML(v) {
+  const alteracoes = Array.isArray(v.alteracoesPagamento) ? v.alteracoesPagamento : [];
+  if (!alteracoes.length) return "";
+  const ultima = alteracoes[alteracoes.length - 1];
+  const vezes = alteracoes.length > 1 ? ` · ${alteracoes.length} alterações` : "";
+  return `
+    <div class="nota-alteracao">
+      <i class="ri-arrow-left-right-line"></i> Pagamento alterado por ${esc(ultima.por || "?")} em ${formatarDataCurta(ultima.dataHora)} · antes: ${esc(descricaoPagamentos(ultima.de))}${vezes}
+    </div>`;
 }
 
 function limparFiltrosVendas() {
@@ -2199,6 +2379,7 @@ function linhaVendaHTML(v) {
           ${ocultaNoCaixa && usuarioLogado.isAdmin ? `<span class="badge badge-oculta">Oculta no caixa</span>` : ""}
           <span class="texto-suave">${esc(nomeOperador)} · #${esc(v.id)}</span>
         </div>
+        ${notaAlteracaoHTML(v)}
         ${cancelada ? `
           <div class="motivo-cancelamento">
             <i class="ri-close-circle-line"></i> Cancelada por ${esc(v.canceladoPor || "Sistema")}${quando} · ${esc(v.motivoCancelamento || "Sem motivo informado")}
@@ -2210,6 +2391,11 @@ function linhaVendaHTML(v) {
         <button type="button" class="btn btn-secondary btn-sm" onclick="imprimirCupomVenda80mm('${esc(v.id)}')" title="Imprimir 2ª via">
           <i class="ri-printer-line"></i><span class="rotulo">2ª via</span>
         </button>
+        ${podeAlterarPagamento(v) ? `
+          <button type="button" class="btn btn-secondary btn-sm" onclick="abrirAlteracaoPagamento('${esc(v.id)}')" title="Alterar a forma de pagamento (o valor não muda)">
+            <i class="ri-arrow-left-right-line"></i><span class="rotulo">Alterar pagamento</span>
+          </button>
+        ` : ""}
         ${podeCancelarVenda(v) ? `
           <button type="button" class="btn btn-danger btn-sm" onclick="abrirModalCancelamento('${esc(v.id)}')" title="Cancelar venda">
             <i class="ri-close-circle-line"></i><span class="rotulo">Cancelar</span>
@@ -3147,6 +3333,9 @@ function imprimirCupomVenda80mm(vendaId, callbackPosImpressao = null) {
     ` : ""}
     <div class="cupom-total">TOTAL: ${fmt(v.valorFinal)}</div>
     ${linhasTrocoCupom(v)}
+    ${Array.isArray(v.alteracoesPagamento) && v.alteracoesPagamento.length
+      ? `<div>Forma de pagamento corrigida em ${formatarDataCurta(v.alteracoesPagamento[v.alteracoesPagamento.length - 1].dataHora)}</div>`
+      : ""}
 
     <div class="cupom-footer">
       Obrigado pela preferência!
@@ -3365,6 +3554,10 @@ Object.assign(window, {
   alternarCampoSenha,
   mostrarSenhaOperador,
   encerrarTurnoSelecionado,
+  abrirAlteracaoPagamento,
+  alterarPagamentoUltimaVenda,
+  cancelarPagamento,
+  concluirPagamento,
   registrarTurnoAberto,
   atualizarCarrinhoUI,
   carregarHistoricoTurnos,

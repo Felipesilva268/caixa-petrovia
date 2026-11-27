@@ -2457,6 +2457,42 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
   .busca-lista { min-width: 0; flex-basis: 100%; }
 }
 
+/* Alterar a forma de pagamento de uma venda concluída */
+.pagamento-contexto {
+  margin: 0.4rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.pagamento-contexto strong { color: var(--text); }
+
+.btn-link-sutil {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.9rem;
+  padding: 0.35rem 0.55rem;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-link-sutil:hover { color: var(--accent); background: var(--accent-soft); }
+.btn-link-sutil:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.45); }
+
+.nota-alteracao {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--info);
+}
+
 /* Barras de rolagem discretas */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
