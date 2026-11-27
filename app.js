@@ -306,7 +306,7 @@ function alternarTema() {
 
 // Avisos rápidos no rodapé (no lugar das janelas cinzas do navegador)
 function avisar(mensagem, opcoes = {}) {
-  const { tipo = "info", acao = null, duracao = acao ? 6000 : 3500 } = opcoes;
+  const { tipo = "info", acao = null, duracao = acao ? 10000 : 3500 } = opcoes;
   const pilha = document.getElementById("avisos");
   if (!pilha) return () => {};
   const icones = {
