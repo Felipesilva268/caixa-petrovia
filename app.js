@@ -306,7 +306,10 @@ function alternarTema() {
 
 // Avisos rápidos no rodapé (no lugar das janelas cinzas do navegador)
 function avisar(mensagem, opcoes = {}) {
-  const { tipo = "info", acao = null, duracao = acao ? 10000 : 3500 } = opcoes;
+  const { tipo = "info", acao = null } = opcoes;
+  // Tempo para dar para ler: 7 s nos avisos comuns, 10 s nos de erro ou com "Desfazer",
+  // e mais tempo para mensagens longas (até 15 s)
+  const duracao = opcoes.duracao ?? Math.min(15000, Math.max(acao || tipo === "erro" ? 10000 : 7000, String(mensagem).length * 70));
   const pilha = document.getElementById("avisos");
   if (!pilha) return () => {};
   const icones = {
@@ -352,7 +355,13 @@ function avisar(mensagem, opcoes = {}) {
   pilha.appendChild(el);
   while (pilha.children.length > 3) pilha.firstElementChild.remove();
   requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(fechar, duracao);
+  // Com o mouse em cima, o aviso não some; ao tirar, ainda fica mais 3 s
+  let timer = setTimeout(fechar, duracao);
+  el.addEventListener("mouseenter", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", () => {
+    clearTimeout(timer);
+    timer = setTimeout(fechar, 3000);
+  });
   return fechar;
 }
 
