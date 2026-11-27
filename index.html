@@ -20,7 +20,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <link rel="stylesheet" href="style.css?v=20261126-3">
+  <link rel="stylesheet" href="style.css?v=20261127-1">
 </head>
 <body>
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
@@ -70,7 +70,8 @@
   <!-- MODAL 2: PAGAMENTO (ÚNICO OU DIVIDIDO) -->
   <div id="modal-pagamento" class="modal-overlay no-print">
     <div class="modal-card modal-pagamento-card">
-      <h2>Pagamento</h2>
+      <h2 id="titulo-pagamento">Pagamento</h2>
+      <p id="pagamento-contexto" class="pagamento-contexto hidden"></p>
 
       <!-- Resumo de valores -->
       <div class="pagamento-resumo-box mono">
@@ -105,10 +106,10 @@
         </div>
 
         <div class="linha-botoes">
-          <button type="button" onclick="fecharModalPagamento()" class="btn btn-secondary">
+          <button type="button" onclick="cancelarPagamento()" class="btn btn-secondary">
             Cancelar <kbd>Esc</kbd>
           </button>
-          <button type="button" id="btn-concluir-pagamento-misto" onclick="finalizarVendaComposta()" class="btn btn-success hidden">
+          <button type="button" id="btn-concluir-pagamento-misto" onclick="concluirPagamento()" class="btn btn-success hidden">
             <i class="ri-check-double-line"></i> Concluir venda <kbd>F2</kbd>
           </button>
         </div>
@@ -164,6 +165,9 @@
           <i class="ri-printer-line"></i> Imprimir <kbd>Enter</kbd>
         </button>
       </div>
+      <button type="button" class="btn-link-sutil" onclick="alterarPagamentoUltimaVenda()">
+        <i class="ri-arrow-left-right-line"></i> Errou a forma de pagamento? Alterar <kbd>F2</kbd>
+      </button>
     </div>
   </div>
 
@@ -666,6 +670,6 @@
   <div id="area-impressao" class="print-only"></div>
 
   <!-- MOTOR COM FIREBASE INTEGRADO -->
-  <script type="module" src="app.js?v=20261126-3"></script>
+  <script type="module" src="app.js?v=20261127-1"></script>
 </body>
 </html>
