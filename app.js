@@ -2884,13 +2884,20 @@ function atualizarAvisoFimTurno() {
     const chave = `${turnoAtivo.id}:${fins.length}`;
     if (fim && Date.now() >= fim - 15 * 60000 && aviso.dataset.dispensado !== chave) {
       mostrar = true;
-      const prox = proximoPeriodo(turnoAtivo);
-      const passou = Date.now() >= fim;
-      const hora = new Date(fim).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      const agora = Date.now();
+      const passou = agora >= fim;
+      // Esquecido aberto: nem estendendo cobriria a hora atual
+      const esquecido = agora >= fim + 8 * 3600000;
+      const prox = esquecido ? null : proximoPeriodo(turnoAtivo);
+      const quando = quandoTexto(fim);
       aviso.dataset.chave = chave;
-      document.getElementById("aviso-fim-texto").innerHTML = passou
-        ? `<strong>O seu turno terminou às ${hora}.</strong> Vai continuar no caixa? Estenda o turno ou encerre para o próximo operador.`
-        : `<strong>O seu turno termina às ${hora}.</strong> Vai ficar mais um período? Estenda sem fechar o caixa.`;
+      document.getElementById("aviso-fim-texto").innerHTML = esquecido
+        ? `<strong>Este turno ficou aberto: terminou ${quando}.</strong> Encerre para fechar o caixa e depois abra o turno de agora.`
+        : passou
+          ? `<strong>O seu turno terminou ${quando}.</strong> Vai continuar no caixa? Estenda o turno ou encerre para o próximo operador.`
+          : `<strong>O seu turno termina ${quando}.</strong> Vai ficar mais um período? Estenda sem fechar o caixa.`;
+      btnEncerrar.classList.toggle("btn-primary", esquecido);
+      btnEncerrar.classList.toggle("btn-secondary", !esquecido);
       btn.classList.toggle("hidden", !prox);
       if (prox) btn.innerHTML = `<i class="ri-add-circle-line"></i> Estender para a ${prox.nome.toLowerCase()}`;
     }
@@ -2898,6 +2905,18 @@ function atualizarAvisoFimTurno() {
   aviso.classList.toggle("hidden", !mostrar);
   tela.classList.toggle("com-aviso-fim", mostrar);
   if (mostrar) medirAvisoFimTurno();
+}
+
+// "às 22:00", "ontem às 22:00" ou "em 25/11 às 22:00"
+function quandoTexto(ts) {
+  const d = new Date(ts);
+  const hora = `às ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const dia = new Date(d); dia.setHours(0, 0, 0, 0);
+  const diff = Math.round((hoje - dia) / 86400000);
+  if (diff === 0) return hora;
+  if (diff === 1) return `ontem ${hora}`;
+  return `em ${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${hora}`;
 }
 
 // A grade do PDV desconta a altura real do aviso (o texto pode quebrar em 2 linhas)
