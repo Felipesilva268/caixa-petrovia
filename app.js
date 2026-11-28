@@ -508,6 +508,44 @@ function rotuloTurnoHTML(tipoTurno) {
   return `${esc(texto.slice(0, i))}<span class="turno-horario">${esc(texto.slice(i))}</span>`;
 }
 
+// Dobra de turno: o mesmo caixa pode cobrir até 3 períodos seguidos
+const PERIODOS = [
+  { nome: "MANHÃ", inicio: 6, fim: 14 },
+  { nome: "TARDE", inicio: 14, fim: 22 },
+  { nome: "NOITE", inicio: 22, fim: 6 }
+];
+const HORA_2 = h => `${String(h).padStart(2, "0")}h`;
+
+function periodosDoTurno(t) {
+  if (Array.isArray(t?.periodos) && t.periodos.length) return t.periodos;
+  const nome = String(t?.tipoTurno || "").split(" ")[0].toUpperCase();
+  return PERIODOS.some(p => p.nome === nome) ? [nome] : [];
+}
+
+function rotuloPeriodos(lista) {
+  const ps = lista.map(n => PERIODOS.find(p => p.nome === n)).filter(Boolean);
+  if (!ps.length) return "";
+  return `${ps.map(p => p.nome).join(" + ")} (${HORA_2(ps[0].inicio)}-${HORA_2(ps[ps.length - 1].fim)})`;
+}
+
+function proximoPeriodo(t) {
+  const lista = periodosDoTurno(t);
+  if (!lista.length || lista.length >= PERIODOS.length) return null;
+  const i = PERIODOS.findIndex(p => p.nome === lista[lista.length - 1]);
+  return PERIODOS[(i + 1) % PERIODOS.length];
+}
+
+// Horário em que termina cada período do turno (pelo relógio, a partir da abertura)
+function finsDosPeriodos(t) {
+  const lista = periodosDoTurno(t);
+  if (!lista.length) return [];
+  const primeiro = PERIODOS.find(p => p.nome === lista[0]);
+  const fim = new Date(t.dataHoraAbertura);
+  fim.setHours(primeiro.fim, 0, 0, 0);
+  if (fim.getTime() <= t.dataHoraAbertura) fim.setDate(fim.getDate() + 1);
+  return lista.map((_, i) => fim.getTime() + i * 8 * 3600000);
+}
+
 // Mostrar/esconder senha nos formulários do Admin
 function alternarCampoSenha(id, botao) {
   const campo = document.getElementById(id);
@@ -578,6 +616,7 @@ function iniciarRelogio() {
   };
   atualizar();
   setInterval(atualizar, 15000);
+  setInterval(() => atualizarAvisoFimTurno(), 60000);
 }
 
 // Turnos do histórico que o usuário abriu ou fechou (para manter ao atualizar a lista)
@@ -2703,6 +2742,7 @@ function abrirTurno(tipoTurno) {
     usuarioId: usuarioLogado.id,
     operadorNome: usuarioLogado.nome,
     tipoTurno,
+    periodos: periodosDoTurno({ tipoTurno }),
     dataHoraAbertura: Date.now(),
     dataHoraFechamento: null,
     status: "ABERTO"
@@ -2720,6 +2760,82 @@ function abrirTurno(tipoTurno) {
       abrindoTurno = false;
       document.querySelectorAll(".turno-actions button").forEach(b => { b.disabled = false; });
     });
+}
+
+// Quem vai ficar mais um período continua no mesmo caixa, sem fechar e abrir outro
+async function estenderTurno() {
+  if (!turnoAtivo) return;
+  const prox = proximoPeriodo(turnoAtivo);
+  if (!prox) {
+    avisar("Este turno já cobre o máximo de períodos. Encerre-o para abrir um novo.", { tipo: "alerta" });
+    return;
+  }
+  const periodos = [...periodosDoTurno(turnoAtivo), prox.nome];
+  const novoRotulo = rotuloPeriodos(periodos);
+  const confirmou = await confirmar({
+    titulo: `Estender o turno para a ${prox.nome.toLowerCase()}?`,
+    mensagem: `O caixa continua aberto como "${novoRotulo}". As vendas seguem somando no mesmo turno e, no fim, sai um fechamento só, com o total separado por período.`,
+    confirmarTexto: "Estender turno",
+    cancelarTexto: "Voltar"
+  });
+  if (!confirmou || !turnoAtivo) return;
+
+  const extensoes = [...(turnoAtivo.extensoes || []), {
+    para: prox.nome,
+    dataHora: Date.now(),
+    por: usuarioLogado?.nome || ""
+  }];
+  const mudancas = { periodos, tipoTurno: novoRotulo, extensoes };
+  Object.assign(turnoAtivo, mudancas);
+  const noCache = cacheTurnos.find(t => mesmoId(t.id, turnoAtivo.id));
+  if (noCache && noCache !== turnoAtivo) Object.assign(noCache, mudancas);
+  atualizarStatusTurnoUI();
+  avisar(`Turno estendido: ${novoRotulo}. Pode continuar vendendo normalmente.`, { tipo: "sucesso" });
+
+  setDoc(doc(db, "turnos", String(turnoAtivo.id)), mudancas, { merge: true })
+    .catch(erro => {
+      console.error("Erro ao estender turno:", erro);
+      avisar("Não foi possível salvar a extensão do turno na nuvem. Tente de novo.", { tipo: "erro" });
+    });
+}
+
+// Aviso no PDV quando o período do turno está acabando
+function atualizarAvisoFimTurno() {
+  const aviso = document.getElementById("aviso-fim-turno");
+  const tela = document.getElementById("tela-pdv");
+  if (!aviso || !tela) return;
+  let mostrar = false;
+  if (turnoAtivo) {
+    const fins = finsDosPeriodos(turnoAtivo);
+    const fim = fins[fins.length - 1];
+    const chave = `${turnoAtivo.id}:${fins.length}`;
+    if (fim && Date.now() >= fim - 15 * 60000 && aviso.dataset.dispensado !== chave) {
+      mostrar = true;
+      const prox = proximoPeriodo(turnoAtivo);
+      const passou = Date.now() >= fim;
+      const hora = new Date(fim).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+      aviso.dataset.chave = chave;
+      document.getElementById("aviso-fim-texto").innerHTML = passou
+        ? `<strong>O seu turno terminou às ${hora}.</strong> Vai continuar no caixa? Estenda o turno ou encerre para o próximo operador.`
+        : `<strong>O seu turno termina às ${hora}.</strong> Vai ficar mais um período? Estenda sem fechar o caixa.`;
+      const btn = document.getElementById("btn-aviso-estender");
+      btn.classList.toggle("hidden", !prox);
+      if (prox) btn.innerHTML = `<i class="ri-add-circle-line"></i> Estender para a ${prox.nome.toLowerCase()}`;
+    }
+  }
+  aviso.classList.toggle("hidden", !mostrar);
+  tela.classList.toggle("com-aviso-fim", mostrar);
+}
+
+function dispensarAvisoFimTurno() {
+  const aviso = document.getElementById("aviso-fim-turno");
+  if (!aviso) return;
+  aviso.dataset.dispensado = aviso.dataset.chave || "";
+  atualizarAvisoFimTurno();
+}
+
+function irParaEncerrarTurno() {
+  navegar("turnos", document.getElementById("tab-turnos"));
 }
 
 async function fecharTurnoAtual(modoImpressao = null) {
@@ -2768,6 +2884,7 @@ function atualizarStatusTurnoUI() {
   }
 
   renderizarInfoTurno();
+  atualizarAvisoFimTurno();
   atualizarBarraAtalhos();
 }
 
@@ -2794,6 +2911,7 @@ function renderizarInfoTurno() {
   infoTurno.innerHTML = `
     <div class="turno-topo">
       <span class="badge badge-open">Aberto</span>
+      ${periodosDoTurno(turnoAtivo).length > 1 ? `<span class="badge badge-dobra"><i class="ri-repeat-line"></i> Dobra</span>` : ""}
       <strong>${esc(turnoAtivo.tipoTurno)}</strong>
       <span class="texto-suave">${esc(nomeAtual)} · desde ${formatarDataCurta(turnoAtivo.dataHoraAbertura)} · ${duracaoTexto(Date.now() - turnoAtivo.dataHoraAbertura)}</span>
     </div>
@@ -2816,7 +2934,16 @@ function renderizarInfoTurno() {
       ${resumo.canceladas ? `<p class="texto-suave">${resumo.canceladas} ${resumo.canceladas === 1 ? "venda cancelada" : "vendas canceladas"} neste turno, fora dos totais.</p>` : ""}
     </div>
 
+    ${blocoPeriodosHTML(turnoAtivo, cacheVendas)}
+
     <div class="turno-acoes">
+      ${proximoPeriodo(turnoAtivo) ? `
+      <div class="grupo-acoes">
+        <span class="rotulo-grupo">Vai ficar mais um período?</span>
+        <button class="btn btn-primary" onclick="estenderTurno()">
+          <i class="ri-add-circle-line"></i> Estender para a ${proximoPeriodo(turnoAtivo).nome.toLowerCase()}
+        </button>
+      </div>` : ""}
       <div class="grupo-acoes">
         <span class="rotulo-grupo">Imprimir parcial</span>
         <button class="btn btn-secondary" onclick="imprimirRelatorioTurno80mm('${esc(turnoAtivo.id)}', 'vendas')">
@@ -2842,6 +2969,35 @@ function renderizarInfoTurno() {
 
   const select = document.getElementById("modo-encerrar");
   if (select) select.value = modoAnterior;
+}
+
+// Total de cada período de um turno dobrado (vendas separadas pelo horário de fim de cada período)
+function totaisPorPeriodo(t, vendas) {
+  const lista = periodosDoTurno(t);
+  if (lista.length < 2) return [];
+  const fins = finsDosPeriodos(t);
+  const totais = lista.map(nome => ({ nome, qtd: 0, total: 0 }));
+  vendas.filter(v => mesmoId(v.turnoId, t.id) && v.status === "CONCLUIDA").forEach(v => {
+    let i = fins.findIndex(f => v.dataHora < f);
+    if (i < 0) i = lista.length - 1;
+    totais[i].qtd += 1;
+    totais[i].total = r2(totais[i].total + v.valorFinal);
+  });
+  return totais;
+}
+
+function blocoPeriodosHTML(t, vendas) {
+  const totais = totaisPorPeriodo(t, vendas);
+  if (!totais.length) return "";
+  return `
+    <div class="periodos-turno">
+      ${totais.map(p => `
+        <div class="periodo-item">
+          <span>${esc(p.nome)}</span>
+          <strong class="mono">${fmt(p.total)}</strong>
+          <small>${p.qtd} ${p.qtd === 1 ? "venda" : "vendas"}</small>
+        </div>`).join("")}
+    </div>`;
 }
 
 function encerrarTurnoSelecionado() {
@@ -3397,6 +3553,10 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
     .map(([label, valor]) => `<div>${esc(label)}: ${fmt(valor)}</div>`)
     .join("");
 
+  const linhasPeriodos = totaisPorPeriodo(t, vendas)
+    .map(p => `<div>${esc(p.nome)}: ${fmt(p.total)} (${p.qtd} ${p.qtd === 1 ? "venda" : "vendas"})</div>`)
+    .join("");
+
   // Corpo principal alterna entre "Por Produtos" e "Por Vendas"
   let tituloRelatorio = `EXTRATO DE TURNO #${t.id}`;
   let corpoTabelaHTML = "";
@@ -3486,6 +3646,11 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
 
     ${corpoTabelaHTML}
 
+    ${linhasPeriodos ? `
+    <div class="cupom-divider"></div>
+    <strong>TOTAL POR PERÍODO:</strong>
+    ${linhasPeriodos}` : ""}
+
     <div class="cupom-divider"></div>
     <strong>RESUMO POR PAGAMENTO:</strong>
     ${linhasResumoPag || "<div>Sem movimentação</div>"}
@@ -3509,6 +3674,9 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
 
 // Expõe todas as funções para os eventos inline do HTML
 Object.assign(window, {
+  estenderTurno,
+  dispensarAvisoFimTurno,
+  irParaEncerrarTurno,
   autenticarOperador,
   bloquearCaixa,
   navegar,
