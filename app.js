@@ -104,6 +104,7 @@ const diasAntigosCarregados = new Set();
 const turnosAntigosCarregados = new Set();
 
 let abrindoTurno = false;
+let painelCorrecaoAberto = false;
 
 // Login só é validado depois que usuários e senha master chegaram da nuvem
 // (antes disso, toda senha parecia "inválida" porque a lista ainda estava vazia)
@@ -533,6 +534,42 @@ function proximoPeriodo(t) {
   if (!lista.length || lista.length >= PERIODOS.length) return null;
   const i = PERIODOS.findIndex(p => p.nome === lista[lista.length - 1]);
   return PERIODOS[(i + 1) % PERIODOS.length];
+}
+
+// Período pelo relógio: 06h-14h manhã, 14h-22h tarde, 22h-06h noite
+function periodoDaHora(momento = Date.now()) {
+  const h = new Date(momento).getHours();
+  return h >= 6 && h < 14 ? "MANHÃ" : h >= 14 && h < 22 ? "TARDE" : "NOITE";
+}
+
+// Aceita abrir até 30 min antes do período começar
+const TOLERANCIA_ABERTURA = 30 * 60000;
+function periodoCombinaComHora(nome, momento) {
+  return nome === periodoDaHora(momento) || nome === periodoDaHora(momento + TOLERANCIA_ABERTURA);
+}
+
+// Sequência de períodos a partir de um nome (ex.: TARDE, 2 → TARDE, NOITE)
+function sequenciaDePeriodos(inicio, quantidade) {
+  const i = PERIODOS.findIndex(p => p.nome === inicio);
+  return Array.from({ length: quantidade }, (_, k) => PERIODOS[(i + k) % PERIODOS.length].nome);
+}
+
+// Turno aberto em período diferente do horário da abertura (ex.: "Manhã" às 15h)
+function periodoSugeridoSeErrado(t) {
+  const lista = periodosDoTurno(t);
+  if (!lista.length) return null;
+  return periodoCombinaComHora(lista[0], t.dataHoraAbertura) ? null : periodoDaHora(t.dataHoraAbertura);
+}
+
+// Destaca no PDV o botão do período certo para a hora atual
+function marcarPeriodoSugerido() {
+  const agora = periodoDaHora();
+  document.querySelectorAll("#aviso-turno-fechado [data-periodo]").forEach(btn => {
+    const certo = btn.dataset.periodo === agora;
+    btn.classList.toggle("btn-primary", certo);
+    btn.classList.toggle("btn-secondary", !certo);
+    btn.classList.toggle("periodo-sugerido", certo);
+  });
 }
 
 // Horário em que termina cada período do turno (pelo relógio, a partir da abertura)
@@ -2722,8 +2759,24 @@ function verificarTurnoAbertoDoUsuario() {
   atualizarStatusTurnoUI();
 }
 
-function abrirTurno(tipoTurno) {
+async function abrirTurno(tipoTurno, conferido = false) {
   if (!usuarioLogado || abrindoTurno) return;
+
+  // Botão do período errado para a hora (ex.: "Abrir manhã" às 15h): oferece o certo
+  const escolhido = periodosDoTurno({ tipoTurno })[0];
+  if (!conferido && escolhido && !periodoCombinaComHora(escolhido, Date.now()) && !obterTurnoAbertoDoUsuario(usuarioLogado.id)) {
+    const certo = periodoDaHora();
+    const hora = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const ok = await confirmar({
+      titulo: `Abrir como ${certo.toLowerCase()}?`,
+      mensagem: `Agora são ${hora}, horário da ${certo.toLowerCase()} ${rotuloPeriodos([certo]).split(" ")[1]}. Você clicou em ${escolhido.toLowerCase()}.`,
+      confirmarTexto: `Abrir ${certo.toLowerCase()}`,
+      cancelarTexto: "Voltar",
+      tipo: "alerta"
+    });
+    if (ok) abrirTurno(rotuloPeriodos([certo]), true);
+    return;
+  }
 
   const turnoExistente = obterTurnoAbertoDoUsuario(usuarioLogado.id);
   if (turnoExistente) {
@@ -2805,7 +2858,27 @@ function atualizarAvisoFimTurno() {
   const tela = document.getElementById("tela-pdv");
   if (!aviso || !tela) return;
   let mostrar = false;
-  if (turnoAtivo) {
+  const btn = document.getElementById("btn-aviso-estender");
+  const btnEncerrar = document.getElementById("btn-aviso-encerrar");
+  const sugerido = turnoAtivo ? periodoSugeridoSeErrado(turnoAtivo) : null;
+  const chaveErrado = turnoAtivo ? `errado:${turnoAtivo.id}:${turnoAtivo.tipoTurno}` : "";
+  if (sugerido && aviso.dataset.dispensado !== chaveErrado) {
+    const hora = new Date(turnoAtivo.dataHoraAbertura).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    aviso.dataset.chave = chaveErrado;
+    document.getElementById("aviso-fim-texto").innerHTML =
+      `<strong>Turno aberto como ${esc(periodosDoTurno(turnoAtivo)[0].toLowerCase())} às ${hora}.</strong> Esse horário é da ${sugerido.toLowerCase()}. Corrija sem fechar o caixa.`;
+    btn.classList.remove("hidden");
+    btn.innerHTML = `<i class="ri-edit-line"></i> Corrigir para ${sugerido.toLowerCase()}`;
+    btn.onclick = () => corrigirPeriodoTurno(sugerido);
+    btnEncerrar.classList.add("hidden");
+    aviso.classList.remove("hidden");
+    tela.classList.add("com-aviso-fim");
+    medirAvisoFimTurno();
+    return;
+  }
+  btn.onclick = () => estenderTurno();
+  btnEncerrar.classList.remove("hidden");
+  if (turnoAtivo && !sugerido) {
     const fins = finsDosPeriodos(turnoAtivo);
     const fim = fins[fins.length - 1];
     const chave = `${turnoAtivo.id}:${fins.length}`;
@@ -2818,14 +2891,23 @@ function atualizarAvisoFimTurno() {
       document.getElementById("aviso-fim-texto").innerHTML = passou
         ? `<strong>O seu turno terminou às ${hora}.</strong> Vai continuar no caixa? Estenda o turno ou encerre para o próximo operador.`
         : `<strong>O seu turno termina às ${hora}.</strong> Vai ficar mais um período? Estenda sem fechar o caixa.`;
-      const btn = document.getElementById("btn-aviso-estender");
       btn.classList.toggle("hidden", !prox);
       if (prox) btn.innerHTML = `<i class="ri-add-circle-line"></i> Estender para a ${prox.nome.toLowerCase()}`;
     }
   }
   aviso.classList.toggle("hidden", !mostrar);
   tela.classList.toggle("com-aviso-fim", mostrar);
+  if (mostrar) medirAvisoFimTurno();
 }
+
+// A grade do PDV desconta a altura real do aviso (o texto pode quebrar em 2 linhas)
+function medirAvisoFimTurno() {
+  const aviso = document.getElementById("aviso-fim-turno");
+  if (aviso && !aviso.classList.contains("hidden") && aviso.offsetHeight) {
+    document.documentElement.style.setProperty("--altura-aviso", `${aviso.offsetHeight}px`);
+  }
+}
+window.addEventListener("resize", medirAvisoFimTurno);
 
 function dispensarAvisoFimTurno() {
   const aviso = document.getElementById("aviso-fim-turno");
@@ -2836,6 +2918,47 @@ function dispensarAvisoFimTurno() {
 
 function irParaEncerrarTurno() {
   navegar("turnos", document.getElementById("tab-turnos"));
+}
+
+// Corrige o período de um turno aberto no botão errado, sem fechar o caixa
+async function corrigirPeriodoTurno(nome) {
+  if (!turnoAtivo || !PERIODOS.some(p => p.nome === nome)) return;
+  const atual = periodosDoTurno(turnoAtivo);
+  const periodos = sequenciaDePeriodos(nome, Math.max(1, atual.length));
+  const novoRotulo = rotuloPeriodos(periodos);
+  if (novoRotulo === turnoAtivo.tipoTurno) return;
+  const confirmou = await confirmar({
+    titulo: `Corrigir para ${novoRotulo}?`,
+    mensagem: `O turno está como "${turnoAtivo.tipoTurno}". O caixa continua aberto e as vendas não mudam: só o período do turno é corrigido, e a correção fica registrada.`,
+    confirmarTexto: "Corrigir período",
+    cancelarTexto: "Voltar"
+  });
+  if (!confirmou || !turnoAtivo) return;
+
+  const correcoesPeriodo = [...(turnoAtivo.correcoesPeriodo || []), {
+    de: turnoAtivo.tipoTurno,
+    para: novoRotulo,
+    dataHora: Date.now(),
+    por: usuarioLogado?.nome || ""
+  }];
+  const mudancas = { periodos, tipoTurno: novoRotulo, correcoesPeriodo };
+  Object.assign(turnoAtivo, mudancas);
+  const noCache = cacheTurnos.find(t => mesmoId(t.id, turnoAtivo.id));
+  if (noCache && noCache !== turnoAtivo) Object.assign(noCache, mudancas);
+  painelCorrecaoAberto = false;
+  atualizarStatusTurnoUI();
+  avisar(`Turno corrigido para ${novoRotulo}.`, { tipo: "sucesso" });
+
+  setDoc(doc(db, "turnos", String(turnoAtivo.id)), mudancas, { merge: true })
+    .catch(erro => {
+      console.error("Erro ao corrigir período:", erro);
+      avisar("Não foi possível salvar a correção na nuvem. Tente de novo.", { tipo: "erro" });
+    });
+}
+
+function alternarCorrecaoPeriodo() {
+  painelCorrecaoAberto = !painelCorrecaoAberto;
+  renderizarInfoTurno();
 }
 
 async function fecharTurnoAtual(modoImpressao = null) {
@@ -2879,6 +3002,7 @@ function atualizarStatusTurnoUI() {
   } else {
     badge.textContent = "Caixa fechado";
     badge.className = "badge badge-closed";
+    marcarPeriodoSugerido();
     aviso.classList.remove("hidden");
     pdvArea.classList.add("hidden");
   }
@@ -2914,7 +3038,14 @@ function renderizarInfoTurno() {
       ${periodosDoTurno(turnoAtivo).length > 1 ? `<span class="badge badge-dobra"><i class="ri-repeat-line"></i> Dobra</span>` : ""}
       <strong>${esc(turnoAtivo.tipoTurno)}</strong>
       <span class="texto-suave">${esc(nomeAtual)} · desde ${formatarDataCurta(turnoAtivo.dataHoraAbertura)} · ${duracaoTexto(Date.now() - turnoAtivo.dataHoraAbertura)}</span>
+      <button type="button" class="link-btn link-corrigir" onclick="alternarCorrecaoPeriodo()"><i class="ri-edit-line"></i> Corrigir período</button>
     </div>
+    ${painelCorrecaoAberto ? `
+    <div class="corrigir-periodo">
+      <span class="rotulo-grupo">Abriu no período errado? O turno começa na:</span>
+      ${PERIODOS.map(p => `<button type="button" class="btn ${p.nome === periodosDoTurno(turnoAtivo)[0] ? "btn-secondary" : "btn-primary"}" ${p.nome === periodosDoTurno(turnoAtivo)[0] ? "disabled" : ""} onclick="corrigirPeriodoTurno('${p.nome}')">${p.nome.charAt(0) + p.nome.slice(1).toLowerCase()} <small>${HORA_2(p.inicio)}-${HORA_2(p.fim)}</small></button>`).join("")}
+      <button type="button" class="link-btn" onclick="alternarCorrecaoPeriodo()">Cancelar</button>
+    </div>` : ""}
 
     <div class="kpi-grid kpi-turno">
       <div class="kpi-card kpi-teal"><span>Vendas</span><strong>${resumo.qtd}</strong></div>
@@ -3675,6 +3806,8 @@ async function imprimirRelatorioTurno80mm(turnoId, modo = "vendas", turnoOverrid
 // Expõe todas as funções para os eventos inline do HTML
 Object.assign(window, {
   estenderTurno,
+  corrigirPeriodoTurno,
+  alternarCorrecaoPeriodo,
   dispensarAvisoFimTurno,
   irParaEncerrarTurno,
   autenticarOperador,
