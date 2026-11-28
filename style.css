@@ -2608,7 +2608,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
 
 @media (min-width: 1024px) and (min-height: 560px) {
   #tela-pdv.active.com-aviso-fim .pdv-grid:not(.hidden) {
-    height: calc(100dvh - var(--altura-topo) - var(--altura-rodape) - 3 * var(--gap-tela) - 52px - env(safe-area-inset-bottom, 0px));
+    height: calc(100dvh - var(--altura-topo) - var(--altura-rodape) - 3 * var(--gap-tela) - var(--altura-aviso, 52px) - env(safe-area-inset-bottom, 0px));
   }
 }
 @media (max-width: 720px) {
@@ -2633,3 +2633,24 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
 .periodo-item span { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.04em; color: var(--text-muted); }
 .periodo-item strong { font-size: 1.1rem; }
 .periodo-item small { color: var(--text-faint); }
+
+/* Período errado: botão sugerido e correção */
+.turno-actions .periodo-sugerido { position: relative; }
+.turno-actions .periodo-sugerido::after {
+  content: "agora";
+  position: absolute; top: -9px; right: -6px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em;
+  background: var(--success); color: var(--success-ink);
+  border-radius: 999px;
+}
+.turno-topo .link-corrigir { margin-left: auto; font-size: 0.85rem; }
+.corrigir-periodo {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+  margin: -0.25rem 0 1rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.corrigir-periodo .btn small { opacity: 0.8; font-weight: 500; margin-left: 0.25rem; }
