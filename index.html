@@ -20,7 +20,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/remixicon@4.2.0/fonts/remixicon.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
-  <link rel="stylesheet" href="style.css?v=20261127-3">
+  <link rel="stylesheet" href="style.css?v=20261128-1">
 </head>
 <body>
   <!-- MODAL 1: BLOQUEIO DE CAIXA -->
@@ -292,6 +292,16 @@
           <button onclick="abrirTurno('NOITE (22h-06h)')" class="btn btn-primary">
             <i class="ri-moon-clear-line"></i> Abrir noite
           </button>
+        </div>
+      </div>
+
+      <div id="aviso-fim-turno" class="aviso-fim-turno hidden" role="status">
+        <i class="ri-alarm-warning-line icone"></i>
+        <p id="aviso-fim-texto"></p>
+        <div class="acoes">
+          <button type="button" id="btn-aviso-estender" class="btn btn-primary" onclick="estenderTurno()">Estender</button>
+          <button type="button" class="btn btn-secondary" onclick="irParaEncerrarTurno()"><i class="ri-lock-password-line"></i> Encerrar</button>
+          <button type="button" class="btn-icone-fechar" onclick="dispensarAvisoFimTurno()" title="Dispensar aviso" aria-label="Dispensar aviso"><i class="ri-close-line"></i></button>
         </div>
       </div>
 
@@ -670,6 +680,6 @@
   <div id="area-impressao" class="print-only"></div>
 
   <!-- MOTOR COM FIREBASE INTEGRADO -->
-  <script type="module" src="app.js?v=20261127-3"></script>
+  <script type="module" src="app.js?v=20261128-1"></script>
 </body>
 </html>
